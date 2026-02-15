@@ -1,0 +1,107 @@
+# services:
+#   postgres:
+#     container_name: evolution_postgres
+#     image: postgres:15
+#     restart: always
+#     environment:
+#       POSTGRES_USER: evolution
+#       POSTGRES_PASSWORD: your_secure_password
+#       POSTGRES_DB: evolution
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+#     ports:
+#       - "5432:5432"
+
+#   evolution-api:
+#     container_name: evolution_api
+#     image: atendai/evolution-api
+#     restart: always
+#     ports:
+#       - "8080:8080"
+#     env_file:
+#       - .env
+#     volumes:
+#       - evolution_store:/evolution/store
+#       - evolution_instances:/evolution/instances
+#     depends_on:
+#       - postgres
+
+# volumes:
+#   evolution_store:
+#   evolution_instances:
+#   postgres_data:
+
+services:
+  redis:
+    image: redis:latest
+    container_name: redis
+    networks:
+      - evolution-net
+    command: >
+      redis-server --port 6379 --appendonly yes
+    volumes:
+      - evolution_redis:/data
+    ports:
+      - 6379:6379
+
+  postgres:
+    container_name: postgres
+    image: postgres:15
+    networks:
+      - evolution-net
+    command: ["postgres", "-c", "max_connections=1000"]
+    restart: always
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=evolution_secret
+      - POSTGRES_DB=evolution
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - 5432
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    networks:
+      - evolution-net
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@example.com
+      - PGADMIN_DEFAULT_PASSWORD=your_secure_password  
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - 4000:80
+    depends_on:
+      - postgres
+
+  evolution-api:
+    container_name: evolution_api
+    image: evoapicloud/evolution-api:v2.3.5
+    restart: always
+    networks:
+      - evolution-net
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - evolution_store:/evolution/store
+      - evolution_instances:/evolution/instances
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  evolution_redis:
+  postgres_data:
+  pgadmin_data:
+  evolution_store:
+  evolution_instances:
+
+networks:
+  evolution-net:
+    name: evolution-net
+    driver: bridge
