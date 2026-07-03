@@ -1,224 +1,152 @@
-<p align="center">
-  <a href="https://evolutionfoundation.com.br">
-    <img src="./public/hover-evolution.png" alt="Evolution Foundation" />
-  </a>
-</p>
+# NC Triangle Muslims — WhatsApp Event Aggregation Pipeline
 
-<h1 align="center">Evolution API</h1>
+Self-hosted automation that consolidates event announcements from independent mosque and community WhatsApp groups across the NC Triangle into a single channel, then feeds the public community calendar at [nctrianglemuslims.org/add-event](https://www.nctrianglemuslims.org/add-event).
 
-<p align="center">
-  Open-source REST API for WhatsApp and multi-channel messaging — part of the Evolution Foundation ecosystem.
-</p>
-
-<p align="center">
-  <a href="https://github.com/evolution-foundation/evolution-api/releases/latest"><img src="https://img.shields.io/github/v/release/evolution-foundation/evolution-api?include_prereleases&label=version&color=00ffa7" alt="Latest version" /></a>
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://docs.evolutionfoundation.com.br"><img src="https://img.shields.io/badge/Docs-evolutionfoundation.com.br-00ffa7" alt="Documentation" /></a>
-  <a href="https://evolutionfoundation.com.br/community"><img src="https://img.shields.io/badge/Community-Join%20us-white" alt="Community" /></a>
-  <a href="https://hub.docker.com/r/evoapicloud/evolution-api"><img src="https://img.shields.io/badge/Docker-evoapicloud-blue" alt="Docker image" /></a>
-</p>
-
-<p align="center">
-  <a href="https://evolutionfoundation.com.br">Website</a> &middot;
-  <a href="https://docs.evolutionfoundation.com.br">Documentation</a> &middot;
-  <a href="https://evolutionfoundation.com.br/community">Community</a> &middot;
-  <a href="mailto:suporte@evofoundation.com.br">Support</a>
-</p>
+**Organization:** [NC Triangle Muslims](https://www.nctrianglemuslims.org)
 
 ---
 
-## About
+## Overview
 
-**Evolution API** is a powerful, production-ready REST API for WhatsApp and multi-channel messaging. Originally focused on WhatsApp, it has grown into a comprehensive platform supporting multiple messaging providers and integrations.
+Muslim communities in the Raleigh–Durham area operate dozens of separate WhatsApp groups for mosques, student associations, youth programs, and civic organizations. Event information is valuable but fragmented—easy to miss when it is spread across unrelated group chats.
 
-Today, Evolution API supports both the Baileys-based WhatsApp Web API and the official WhatsApp Cloud API, plus integrations with Typebot, Chatwoot, Dify, OpenAI, RabbitMQ, Apache Kafka, Amazon SQS, Socket.io, Amazon S3 / MinIO, and more.
+This project implements a **self-hosted ingestion pipeline** on a dedicated Linux server that:
 
-Evolution API began as a WhatsApp controller API based on [CodeChat](https://github.com/code-chat-br/whatsapp-api), which in turn implemented the [Baileys](https://github.com/WhiskeySockets/Baileys) library. We continue to acknowledge CodeChat for laying the groundwork.
+1. Connects to WhatsApp via a linked-device API ([Evolution API](https://github.com/evolution-foundation/evolution-api))
+2. Monitors **15+ source groups** (JIAR, IAR, RISE, Young Muslims in Tech, Cary Masjid, and others)
+3. Filters and forwards new messages (text and images) into a **single aggregation group**
+4. Hands off to a downstream **Google Sheets** workflow that structures event data for the community website
 
-## Part of the Evolution Foundation ecosystem
-
-Evolution API is one of the messaging engines maintained by Evolution Foundation. It is used as a WhatsApp provider by the [Evo CRM Community](https://github.com/evolution-foundation/evo-crm-community) and other projects in the ecosystem.
-
----
-
-## Connection Types
-
-Evolution API supports multiple connection types to WhatsApp:
-
-### WhatsApp API — Baileys
-A free API based on WhatsApp Web, leveraging the [Baileys library](https://github.com/WhiskeySockets/Baileys). Suitable for multi-service chats, service bots, and WhatsApp-integrated systems. Note: this method relies on the web version of WhatsApp and may have limitations compared to official APIs.
-
-### WhatsApp Cloud API
-The official API provided by Meta. Designed for businesses with higher messaging volumes and stronger integration support, including end-to-end encryption, advanced analytics, and customer service tools. Requires compliance with Meta's policies and may incur per-message costs.
-
----
-
-## Integrations
-
-Evolution API integrates natively with many platforms:
-
-- **[Typebot](https://typebot.io/)** — conversational bots with trigger management
-- **[Chatwoot](https://www.chatwoot.com/)** — customer service platform
-- **[RabbitMQ](https://www.rabbitmq.com/)** — event streaming via AMQP
-- **[Apache Kafka](https://kafka.apache.org/)** — real-time event streaming and processing
-- **[Amazon SQS](https://aws.amazon.com/sqs/)** — cloud-based message queuing
-- **[Socket.io](https://socket.io/)** — real-time WebSocket events
-- **[Dify](https://dify.ai/)** — AI agent workflows
-- **[OpenAI](https://openai.com/)** — AI capabilities including audio-to-text conversion
-- **Amazon S3 / [MinIO](https://min.io/)** — media file storage
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- **Node.js** 20+
-- **PostgreSQL** or **MySQL**
-- **Redis** (recommended for caching)
-
-### Installation
-
-```bash
-git clone git@github.com:evolution-foundation/evolution-api.git
-cd evolution-api
-
-# Install dependencies
-npm install
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your database, Redis, and API key
-```
-
-### Database setup
-
-```bash
-# Set the database provider
-export DATABASE_PROVIDER=postgresql  # or mysql
-
-# Generate Prisma client
-npm run db:generate
-
-# Deploy migrations
-npm run db:deploy
-```
-
-### Running
-
-```bash
-# Development with hot reload
-npm run dev:server
-
-# Production build and run
-npm run build
-npm run start:prod
-```
-
-### Docker
-
-```bash
-docker pull evoapicloud/evolution-api:latest
-docker run -p 8080:8080 --env-file .env evoapicloud/evolution-api:latest
-```
+The result is one reliable stream of community events without asking every organization to change how they already communicate.
 
 ---
 
 ## Architecture
 
-Evolution API is built with a multi-provider, event-driven architecture:
+```mermaid
+flowchart LR
+  subgraph sources [Source WhatsApp groups]
+    G1[Mosque & org groups]
+    G2["15+ communities"]
+  end
+  subgraph server [Self-hosted Linux server]
+    Evo[Evolution API]
+    Fwd[Python webhook forwarder]
+    PG[(PostgreSQL)]
+    RD[(Redis)]
+  end
+  Agg[Aggregation group]
+  Sheets[Google Sheets]
+  Web[nctrianglemuslims.org]
+
+  sources --> Evo
+  Evo --> PG
+  Evo --> RD
+  Evo -->|messages.upsert webhook| Fwd
+  Fwd -->|REST API| Agg
+  Agg --> Sheets
+  Sheets --> Web
+```
+
+| Layer | Technology | Responsibility |
+|-------|------------|----------------|
+| WhatsApp integration | Evolution API (Node.js / TypeScript) | Linked-device session, webhooks, message send/receive |
+| Message routing | Python (`forwarder/`) | Filter by group JID, deduplicate, forward text/media |
+| Persistence | PostgreSQL + Redis (Docker) | API state, message storage, cache |
+| Orchestration | Bash (`scripts/`) | Start/stop/status for full stack |
+| Downstream | Google Sheets + web app | Event structuring and public calendar UI |
+
+---
+
+## Infrastructure
+
+The entire stack runs on a **self-hosted Linux server** (Ubuntu), deployed to a dedicated **1 TB SSD** mounted at `/mnt/1tb` for durable storage of the application, database volumes, and runtime logs.
+
+| Decision | Rationale |
+|----------|-----------|
+| **Hybrid deployment** | Evolution API from **source** (editable, hot-reload) — PostgreSQL and Redis in **Docker** for isolation |
+| **Webhook-driven routing** | Real-time `messages.upsert` events → Python service on port 5000 |
+| **Environment-based secrets** | All credentials in `.env` (gitignored); Docker Compose reads `${POSTGRES_PASSWORD}` |
+| **Deploy key authentication** | SSH deploy key for CI/CD-style pushes to GitHub without personal tokens on the server |
+| **Operational scripts** | `start-all.sh` / `stop-all.sh` / `status.sh` for repeatable server management |
+
+Server setup, fstab persistence, and troubleshooting are documented in [`docs/setup-plan.md`](docs/setup-plan.md) and [`docs/commands.md`](docs/commands.md).
+
+---
+
+## Technical highlights
+
+- Designed and deployed a **multi-service pipeline** (API + database + custom forwarder) on bare metal
+- Implemented **group-level filtering** using WhatsApp `remoteJid` identifiers across duplicate community group instances
+- Built a **Python webhook consumer** with deduplication, media forwarding (`getBase64FromMediaMessage` → `sendMedia`), and configurable source/target group lists
+- Configured **global webhooks** in Evolution API for event-driven message processing
+- Established **secrets hygiene** for public repository publication (`.env.example`, `github-prep.md`, deploy keys)
+- Documented end-to-end operations for reproducibility and handoff
+
+**Stack:** Python 3 · Node.js 20 · TypeScript · PostgreSQL 15 · Redis 7 · Docker Compose · Bash · Evolution API / Baileys
+
+---
+
+## Repository structure
 
 ```
-Client / CRM
-     ↓
-Evolution API
-  ├── Channel Integrations (Baileys / Cloud API)
-  ├── Chatbot Integrations (Typebot, Chatwoot, OpenAI, Dify, Flowise, N8N)
-  ├── Event Integrations (WebSocket, RabbitMQ, SQS, NATS, Pusher)
-  └── Storage Integrations (S3, MinIO)
+├── forwarder/              # Python webhook service (filter + forward logic)
+├── scripts/                # Server orchestration (start / stop / status)
+├── docs/                   # Setup guides, runbooks, group JID reference
+├── docker-compose.deps.yaml  # PostgreSQL + Redis (API runs on host)
+└── src/                    # Evolution API source (upstream fork)
 ```
 
-Built with **Node.js 20+**, **TypeScript 5+**, and **Express.js**, it provides extensive integrations with chatbots, CRM systems, and messaging platforms.
-
-### Multi-database support
-PostgreSQL and MySQL via Prisma ORM with provider-specific schemas and migrations.
-
-### Authentication
-- API key-based authentication via `apikey` header
-- Instance-specific tokens for WhatsApp connection authentication
-- Webhook signature validation for external integrations
-
-### Message queue support
-RabbitMQ, Amazon SQS, NATS, Pusher and WebSocket for events. Configurable per instance.
-
-### Media handling
-Local storage or S3/MinIO. Automatic media download from WhatsApp. Optional audio transcription via OpenAI.
+| Document | Description |
+|----------|-------------|
+| [docs/commands.md](docs/commands.md) | Operational runbook — start each service individually or all at once |
+| [docs/group-message-forwarder.md](docs/group-message-forwarder.md) | Forwarder design, filter rules, source group configuration |
+| [docs/setup-plan.md](docs/setup-plan.md) | Server installation and debugging notes |
+| [docs/github-prep.md](docs/github-prep.md) | Secrets management before public release |
 
 ---
 
-## Documentation
+## Getting started
 
-| Resource | Link |
-|---|---|
-| Website | [evolutionfoundation.com.br](https://evolutionfoundation.com.br) |
-| Documentation | [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br) |
-| Community | [evolutionfoundation.com.br/community](https://evolutionfoundation.com.br/community) |
-| Docker Hub | [evoapicloud/evolution-api](https://hub.docker.com/r/evoapicloud/evolution-api) |
-| Changelog | [CHANGELOG.md](./CHANGELOG.md) |
-| Contributing | [CONTRIBUTING.md](./CONTRIBUTING.md) |
-| Security | [SECURITY.md](./SECURITY.md) |
+```bash
+git clone git@github.com:mdw223/evolution-api.git
+cd evolution-api
 
----
+cp .env.example .env
+cp forwarder/config.example.yaml forwarder/config.yaml
+# Configure POSTGRES_PASSWORD, DATABASE_CONNECTION_URI, AUTHENTICATION_API_KEY
 
-## Hosting
+npm install
+docker compose -f docker-compose.deps.yaml up -d
+export DATABASE_PROVIDER=postgresql
+npm run db:generate && npm run db:deploy
 
-Deploy Evolution API with optimized infrastructure through our HostGator partnership:
+./scripts/start-all.sh
+./scripts/status.sh
+```
 
-[**Evolution API VPS — HostGator**](https://evolution-api.com/vps-evolution-api)
-
----
-
-## Telemetry
-
-Evolution API collects anonymous telemetry data (routes used, most accessed routes, API version) to help improve the service. **No sensitive or personal data is collected.** This information helps us identify improvements and provide a better experience for users.
+Link a WhatsApp instance via QR code (`nc-triangle-muslims`), then verify the forwarder health endpoint at `http://localhost:5000/health`.
 
 ---
 
-## Contributing
+## Scope of this repository
 
-Contributions are welcome! Please read [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on how to submit issues, propose features, and open pull requests.
-
-Join our [community](https://evolutionfoundation.com.br/community) to discuss ideas and collaborate.
-
----
-
-## Security
-
-For security issues, **do not open a public issue**. Email **suporte@evofoundation.com.br** or use GitHub's private vulnerability reporting. See [SECURITY.md](./SECURITY.md) for details.
+| In scope | Out of scope (downstream) |
+|----------|---------------------------|
+| WhatsApp session management | Google Sheets automation |
+| Source → aggregation group forwarding | Website frontend ([nctrianglemuslims.org](https://www.nctrianglemuslims.org)) |
+| Server deployment & operations | AI/LLM event extraction (planned) |
 
 ---
 
-## Acknowledgments
+## Upstream
 
-- [CodeChat](https://github.com/code-chat-br/whatsapp-api) — original WhatsApp API foundation
-- [Baileys](https://github.com/WhiskeySockets/Baileys) — WhatsApp Web library
+Built on [evolution-foundation/evolution-api](https://github.com/evolution-foundation/evolution-api) (Apache 2.0). This fork extends the upstream project with community-specific automation, deployment tooling, and documentation for a production self-hosted instance.
+
+Upstream documentation: [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br)
 
 ---
 
 ## License
 
-Evolution API is licensed under the Apache License 2.0, with additional brand-protection conditions (LOGO/copyright preservation and Usage Notification requirement). See [LICENSE](./LICENSE) for full details.
-
-For licensing inquiries, contact **suporte@evofoundation.com.br**.
-
-## Trademarks
-
-"Evolution Foundation", "Evolution" and "Evolution API" are trademarks of Evolution Foundation. See [TRADEMARKS.md](./TRADEMARKS.md) for the brand assets policy.
-
-Third-party attributions are documented in [NOTICE](./NOTICE).
-
----
-
-<p align="center">
-  Made by <a href="https://evolutionfoundation.com.br">Evolution Foundation</a> · © 2026
-</p>
+Apache 2.0 — see [LICENSE](./LICENSE). Evolution API is maintained by [Evolution Foundation](https://evolutionfoundation.com.br).
