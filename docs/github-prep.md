@@ -96,3 +96,9 @@ git diff --cached | grep -iE 'password|api_key|apikey' | grep -v change_me | gre
 ```
 
 Never commit `.env`, database volumes, or WhatsApp instance data.
+
+---
+
+## 6. Push changes
+
+See [push-to-github.md](push-to-github.md) for commit/push steps and SSH deploy-key setup on this server.

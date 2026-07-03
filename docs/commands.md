@@ -293,5 +293,7 @@ Always start in this order:
 ## Related docs
 
 - [setup-plan.md](setup-plan.md) — initial server install
+- [github-prep.md](github-prep.md) — secrets and gitignore before pushing
+- [push-to-github.md](push-to-github.md) — commit and push to GitHub
 - [group-message-forwarder.md](group-message-forwarder.md) — forwarder design and config
 - [groups-list.md](groups-list.md) — group JID reference
