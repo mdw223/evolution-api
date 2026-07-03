@@ -20,20 +20,11 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
-find_api_pid() {
-  if [ "$RUN_MODE" = "prod" ]; then
-    pgrep -f "node ${ROOT}/dist/main" 2>/dev/null | head -1
-  else
-    pgrep -f "${ROOT}/src/main.ts" 2>/dev/null | head -1 \
-      || pgrep -f "tsx watch ./src/main.ts" 2>/dev/null | head -1
-  fi
-}
+# shellcheck source=lib/pids.sh
+source "$ROOT/scripts/lib/pids.sh"
 
-find_forwarder_pid() {
-  pgrep -f "python3 ${FORWARDER_DIR}/app.py" 2>/dev/null | head -1 \
-    || pgrep -f "python3 app.py" 2>/dev/null | while read -r p; do
-      tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q "${FORWARDER_DIR}/app.py" && echo "$p" && break
-    done
+find_api_pid_for_mode() {
+  find_api_pid
 }
 
 port_in_use() {
@@ -79,7 +70,7 @@ done
 
 # --- 2. Evolution API (npm) ---
 API_PID_FILE="$PID_DIR/evolution-api.pid"
-EXISTING_API_PID=$(find_api_pid || true)
+EXISTING_API_PID=$(find_api_pid_for_mode || true)
 
 if [ -n "$EXISTING_API_PID" ] && kill -0 "$EXISTING_API_PID" 2>/dev/null; then
   echo "$EXISTING_API_PID" > "$API_PID_FILE"
@@ -107,7 +98,7 @@ else
   fi
 
   sleep 3
-  API_PID=$(find_api_pid || true)
+  API_PID=$(find_api_pid_for_mode || true)
   if [ -z "$API_PID" ]; then
     echo "ERROR: Evolution API failed to start. Check $LOG_DIR/evolution-api.log" >&2
     exit 1

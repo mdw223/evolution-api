@@ -4,15 +4,8 @@ ROOT="/mnt/1tb/evolution-api"
 PID_DIR="$ROOT/logs"
 FORWARDER_DIR="$ROOT/forwarder"
 
-find_api_pid() {
-  pgrep -f "${ROOT}/dist/main" 2>/dev/null | head -1 \
-    || pgrep -f "${ROOT}/src/main.ts" 2>/dev/null | head -1 \
-    || pgrep -f "tsx watch ./src/main.ts" 2>/dev/null | head -1
-}
-
-find_forwarder_pid() {
-  pgrep -f "python3 ${FORWARDER_DIR}/app.py" 2>/dev/null | head -1
-}
+# shellcheck source=lib/pids.sh
+source "$ROOT/scripts/lib/pids.sh"
 
 echo "=== Docker ==="
 docker ps --filter name=evolution_ --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || echo "Docker not running"
