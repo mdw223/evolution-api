@@ -46,3 +46,8 @@ lerna-debug.log*
 .tool-versions
 
 /prisma/migrations/*
+/postgres-data/
+/redis-data/
+/logs/
+forwarder/forwarder.log
+forwarder/__pycache__/

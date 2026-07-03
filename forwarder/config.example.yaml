@@ -1,0 +1,45 @@
+instance: nc-triangle-muslims
+evolution_url: http://localhost:8080
+# api_key loaded from ../.env if left empty
+api_key:
+
+host: 0.0.0.0
+port: 5000
+
+target_group_jid: "120363429717652375@g.us"
+target_group_name: "Test NC Triangle Muslims"
+forward_own_messages: true
+
+group_labels:
+  "120363285627401888@g.us": "JIAR Community"
+  "120363285906619839@g.us": "JIAR Community"
+  "120363239021947902@g.us": "RISE Community"
+  "120363220181471302@g.us": "RISE Community"
+  "120363151179725752@g.us": "IAR"
+  "120363133426120923@g.us": "IAR"
+  "120363150289368320@g.us": "The Light House Project"
+  "120363151962058789@g.us": "The Light House Project"
+  "120363394578390263@g.us": "Madinah Quran & Youth Center MQYC"
+  "120363042013154928@g.us": "Cary Masjid Youth Updates"
+  "120363401702236464@g.us": "Islamic Center of Clayton"
+  "19198889201-1631039817@g.us": "AMYC Announcements"
+  "120363149724432358@g.us": "IAR Janazah Alert 1"
+  "19194378751-1611302422@g.us": "IAR Youth Programs"
+  "120363404196239378@g.us": "Young Muslims in Tech (YMT)"
+
+source_group_jids:
+  - "120363285627401888@g.us"
+  - "120363285906619839@g.us"
+  - "120363239021947902@g.us"
+  - "120363220181471302@g.us"
+  - "120363151179725752@g.us"
+  - "120363133426120923@g.us"
+  - "120363150289368320@g.us"
+  - "120363151962058789@g.us"
+  - "120363394578390263@g.us"
+  - "120363042013154928@g.us"
+  - "120363401702236464@g.us"
+  - "19198889201-1631039817@g.us"
+  - "120363149724432358@g.us"
+  - "19194378751-1611302422@g.us"
+  - "120363404196239378@g.us"
