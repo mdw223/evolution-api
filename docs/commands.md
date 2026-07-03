@@ -11,8 +11,14 @@ Quick reference for starting, stopping, and checking each service.
 ## All at once (recommended)
 
 ```bash
-# Start Docker + Evolution API + forwarder
+# Validate config before starting (optional but recommended)
+/mnt/1tb/evolution-api/scripts/preflight.sh
+
+# Start Docker + Evolution API + forwarder (detached — safe to close terminal)
 /mnt/1tb/evolution-api/scripts/start-all.sh
+
+# Production mode (stable, lower overhead — recommended for 24/7)
+EVOLUTION_RUN_MODE=prod /mnt/1tb/evolution-api/scripts/start-all.sh
 
 # Check status
 /mnt/1tb/evolution-api/scripts/status.sh
@@ -24,6 +30,69 @@ Quick reference for starting, stopping, and checking each service.
 tail -f /mnt/1tb/evolution-api/logs/evolution-api.log \
         /mnt/1tb/evolution-api/logs/forwarder.log
 ```
+
+### Detached / 24-7 operation
+
+`start-all.sh` already starts Evolution API and the forwarder with `nohup` + `setsid`, so **you can close your terminal** as soon as the script prints `Done`. Processes keep running on the server.
+
+```bash
+# Optional: also detach the startup script itself and log its output
+nohup /mnt/1tb/evolution-api/scripts/start-all.sh >> /mnt/1tb/evolution-api/logs/start-all.log 2>&1 &
+```
+
+For **surviving server reboots**, use pm2 (recommended) or systemd — see [24/7 uptime](#247-uptime-survive-reboots) below.
+
+---
+
+## Avoiding common issues
+
+| Issue | Prevention |
+|-------|------------|
+| Prisma `P1000` auth error | Run `scripts/preflight.sh` — `DATABASE_CONNECTION_URI` password **must match** `POSTGRES_PASSWORD` in `.env`. See [github-prep.md](github-prep.md). |
+| Forwarder `Address already in use` | Run `scripts/stop-all.sh` before restarting, or use `start-all.sh` (kills stale orphans on :5000/:8080). |
+| Manager blank / broken UI | Open `http://<host>:8080/manager/#/manager/login` (note the `#`). Server URL on login = `http://<host>:8080` (**not** `/manager`). |
+| Empty instance list | After a fresh DB, create the instance again (Manager or `POST /instance/create`). Run `npm run db:deploy` if schema is missing. |
+| Can't open manager from laptop | Forward port **8080** in Cursor/SSH, then browse `http://localhost:<forwarded-port>/manager/#/manager/login`. |
+
+Run preflight anytime:
+
+```bash
+/mnt/1tb/evolution-api/scripts/preflight.sh
+```
+
+---
+
+## 24/7 uptime (survive reboots)
+
+Docker Postgres/Redis already use `restart: always`. Node and Python **do not** auto-start after reboot unless you add a service manager.
+
+**Option A — pm2 (recommended):**
+
+```bash
+npm install -g pm2
+cd /mnt/1tb/evolution-api
+export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 20
+npm run build
+export DATABASE_PROVIDER=postgresql
+
+# Start API + forwarder under pm2
+pm2 start npm --name evolution-api --cwd /mnt/1tb/evolution-api -- run start:prod
+pm2 start /mnt/1tb/evolution-api/forwarder/app.py --name evolution-forwarder --interpreter python3
+
+pm2 save
+pm2 startup   # follow the printed command (sudo) to enable on boot
+```
+
+Ensure Docker deps start on boot (`docker compose -f docker-compose.deps.yaml up -d` in `@reboot` cron or a systemd unit).
+
+**Option B — start-all.sh on login / cron @reboot:**
+
+```bash
+# crontab -e
+@reboot sleep 30 && /mnt/1tb/evolution-api/scripts/start-all.sh >> /mnt/1tb/evolution-api/logs/start-all.log 2>&1
+```
+
+Use `EVOLUTION_RUN_MODE=prod` in cron for production stability.
 
 ---
 

@@ -28,8 +28,10 @@ stop_pidfile() {
 stop_pidfile "Forwarder" "forwarder.pid"
 stop_pidfile "Evolution API" "evolution-api.pid"
 
-pkill -f "$ROOT/forwarder/app.py" 2>/dev/null || true
+pkill -f "${ROOT}/forwarder/app.py" 2>/dev/null || true
 pkill -f "tsx watch ./src/main.ts" 2>/dev/null || true
+pkill -f "node ${ROOT}/dist/main" 2>/dev/null || true
+pkill -f "${ROOT}/src/main.ts" 2>/dev/null || true
 
 log "Stopping Docker deps..."
 cd "$ROOT"

@@ -1,18 +1,63 @@
 #!/usr/bin/env bash
-# Start NC Triangle Muslims WhatsApp stack:
+# Start NC Triangle Muslims WhatsApp stack (detached — safe to close terminal after this exits):
 #   1. Docker (PostgreSQL + Redis)
 #   2. Evolution API (npm)
 #   3. Python message forwarder
+#
+# Usage:
+#   ./scripts/start-all.sh              # dev mode (tsx watch, hot reload)
+#   EVOLUTION_RUN_MODE=prod ./scripts/start-all.sh   # production (node dist/main)
+#   nohup ./scripts/start-all.sh >> logs/start-all.log 2>&1 &   # extra log of this script
 set -euo pipefail
 
 ROOT="/mnt/1tb/evolution-api"
 LOG_DIR="$ROOT/logs"
 PID_DIR="$ROOT/logs"
 FORWARDER_DIR="$ROOT/forwarder"
+RUN_MODE="${EVOLUTION_RUN_MODE:-dev}"  # dev | prod
 
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+find_api_pid() {
+  if [ "$RUN_MODE" = "prod" ]; then
+    pgrep -f "node ${ROOT}/dist/main" 2>/dev/null | head -1
+  else
+    pgrep -f "${ROOT}/src/main.ts" 2>/dev/null | head -1 \
+      || pgrep -f "tsx watch ./src/main.ts" 2>/dev/null | head -1
+  fi
+}
+
+find_forwarder_pid() {
+  pgrep -f "python3 ${FORWARDER_DIR}/app.py" 2>/dev/null | head -1 \
+    || pgrep -f "python3 app.py" 2>/dev/null | while read -r p; do
+      tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q "${FORWARDER_DIR}/app.py" && echo "$p" && break
+    done
+}
+
+port_in_use() {
+  ss -tln 2>/dev/null | grep -q ":$1 "
+}
+
+stop_stale_on_port() {
+  local port="$1" name="$2"
+  if port_in_use "$port"; then
+    local pid
+    pid=$(ss -tlnp 2>/dev/null | grep ":${port} " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+    if [ -n "$pid" ] && [ -f "$2" ] && [ "$(cat "$2" 2>/dev/null)" != "$pid" ]; then
+      if ! kill -0 "$(cat "$2" 2>/dev/null)" 2>/dev/null; then
+        log "WARNING: $name port :$port held by orphan pid $pid (stale pid file). Killing orphan..."
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    fi
+  fi
+}
+
+log "Running preflight checks..."
+"$ROOT/scripts/preflight.sh"
 
 # --- 1. Docker deps (Postgres + Redis) ---
 log "Starting Docker deps (PostgreSQL + Redis)..."
@@ -33,10 +78,16 @@ for i in $(seq 1 30); do
 done
 
 # --- 2. Evolution API (npm) ---
-if [ -f "$PID_DIR/evolution-api.pid" ] && kill -0 "$(cat "$PID_DIR/evolution-api.pid")" 2>/dev/null; then
-  log "Evolution API already running (pid $(cat "$PID_DIR/evolution-api.pid"))."
+API_PID_FILE="$PID_DIR/evolution-api.pid"
+EXISTING_API_PID=$(find_api_pid || true)
+
+if [ -n "$EXISTING_API_PID" ] && kill -0 "$EXISTING_API_PID" 2>/dev/null; then
+  echo "$EXISTING_API_PID" > "$API_PID_FILE"
+  log "Evolution API already running (pid $EXISTING_API_PID, mode: $RUN_MODE)."
 else
-  log "Starting Evolution API on :8080..."
+  rm -f "$API_PID_FILE"
+  stop_stale_on_port 8080 "Evolution API"
+
   export NVM_DIR="$HOME/.nvm"
   # shellcheck source=/dev/null
   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -44,9 +95,25 @@ else
 
   cd "$ROOT"
   export DATABASE_PROVIDER=postgresql
-  nohup npm run dev:server >> "$LOG_DIR/evolution-api.log" 2>&1 &
-  echo $! > "$PID_DIR/evolution-api.pid"
-  log "Evolution API started (pid $(cat "$PID_DIR/evolution-api.pid"), log: $LOG_DIR/evolution-api.log)"
+
+  if [ "$RUN_MODE" = "prod" ]; then
+    log "Building Evolution API for production..."
+    npm run build
+    log "Starting Evolution API (production) on :8080..."
+    nohup setsid npm run start:prod >> "$LOG_DIR/evolution-api.log" 2>&1 &
+  else
+    log "Starting Evolution API (dev / hot reload) on :8080..."
+    nohup setsid npm run dev:server >> "$LOG_DIR/evolution-api.log" 2>&1 &
+  fi
+
+  sleep 3
+  API_PID=$(find_api_pid || true)
+  if [ -z "$API_PID" ]; then
+    echo "ERROR: Evolution API failed to start. Check $LOG_DIR/evolution-api.log" >&2
+    exit 1
+  fi
+  echo "$API_PID" > "$API_PID_FILE"
+  log "Evolution API started (pid $API_PID, mode: $RUN_MODE, log: $LOG_DIR/evolution-api.log)"
 fi
 
 log "Waiting for Evolution API..."
@@ -62,14 +129,28 @@ for i in $(seq 1 60); do
 done
 
 # --- 3. Python forwarder ---
-if [ -f "$PID_DIR/forwarder.pid" ] && kill -0 "$(cat "$PID_DIR/forwarder.pid")" 2>/dev/null; then
-  log "Forwarder already running (pid $(cat "$PID_DIR/forwarder.pid"))."
+FWD_PID_FILE="$PID_DIR/forwarder.pid"
+EXISTING_FWD_PID=$(find_forwarder_pid || true)
+
+if [ -n "$EXISTING_FWD_PID" ] && kill -0 "$EXISTING_FWD_PID" 2>/dev/null; then
+  echo "$EXISTING_FWD_PID" > "$FWD_PID_FILE"
+  log "Forwarder already running (pid $EXISTING_FWD_PID)."
 else
+  rm -f "$FWD_PID_FILE"
+  stop_stale_on_port 5000 "Forwarder"
+
   log "Starting Python forwarder on :5000..."
   cd "$FORWARDER_DIR"
-  nohup python3 app.py >> "$LOG_DIR/forwarder.log" 2>&1 &
-  echo $! > "$PID_DIR/forwarder.pid"
-  log "Forwarder started (pid $(cat "$PID_DIR/forwarder.pid"), log: $LOG_DIR/forwarder.log)"
+  nohup setsid python3 app.py >> "$LOG_DIR/forwarder.log" 2>&1 &
+
+  sleep 1
+  FWD_PID=$(find_forwarder_pid || true)
+  if [ -z "$FWD_PID" ]; then
+    echo "ERROR: Forwarder failed to start. Check $LOG_DIR/forwarder.log" >&2
+    exit 1
+  fi
+  echo "$FWD_PID" > "$FWD_PID_FILE"
+  log "Forwarder started (pid $FWD_PID, log: $LOG_DIR/forwarder.log)"
 fi
 
 sleep 1
@@ -78,5 +159,12 @@ curl -sf http://localhost:5000/health && echo "" || echo "  forwarder: NOT READY
 curl -sf http://localhost:8080 >/dev/null && echo "  evolution-api: OK" || echo "  evolution-api: NOT READY"
 docker ps --filter name=evolution_ --format '  {{.Names}}: {{.Status}}'
 
-log "Done. Tail logs with:"
-echo "  tail -f $LOG_DIR/evolution-api.log $LOG_DIR/forwarder.log"
+log "Done (detached — you can close this terminal)."
+echo ""
+echo "  Manager UI (on server):  http://localhost:8080/manager/#/manager/login"
+echo "  Manager Server URL:      http://localhost:8080  (NOT /manager)"
+echo "  Via SSH port-forward:    forward :8080, then use http://localhost:<port>/manager/#/manager/login"
+echo ""
+echo "  Status:  $ROOT/scripts/status.sh"
+echo "  Logs:    tail -f $LOG_DIR/evolution-api.log $LOG_DIR/forwarder.log"
+echo "  Stop:    $ROOT/scripts/stop-all.sh"
