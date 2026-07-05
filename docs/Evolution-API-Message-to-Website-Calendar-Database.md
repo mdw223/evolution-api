@@ -409,7 +409,7 @@ See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(pla
 
 ## Phase 2 — Event pipeline on Linux server
 
-**Status:** In progress — **Tier 1 + ingest client implemented** (2026-07-05). Tier 2/3/OCR stubs only.
+**Status:** Tier 1–3 implemented (2026-07-05). Enable pipeline + env keys for production cutover.
 
 **Goal:** Detect event announcements in source WhatsApp groups and POST structured events to Vercel `POST /api/events/ingest`.
 
@@ -417,20 +417,140 @@ See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(pla
 
 ---
 
-### What was built (Tier 1)
+### Tier cascade (handle_webhook)
+
+```
+Message → OCR (if image) → Tier 1 keywords + regex extract
+  ├─ reject (score < 0.1, no image)
+  ├─ Tier 1 success → ingest (published if score ≥ 0.5)
+  └─ Tier 1 incomplete → Tier 2 Ollama (llama3.1:8b)
+       ├─ confidence ≥ 0.75 → ingest published
+       ├─ confidence < 0.75 → Tier 3 Gemini (text + vision if image)
+       └─ confidence ≥ 0.65 → ingest published, else draft
+```
+
+**Image handling:** easyocr runs in `classifier.py` before scoring when `image_base64` is present. Standalone flyer images always `force_pass` to Tier 2 even if OCR empty.
+
+**Flyer upload:** Google Drive folder `1RRVu2N65MXZXAEbw463L4GNkqCAloWr8` via service account (`GOOGLE_SERVICE_ACCOUNT_JSON`). URL format: `https://drive.google.com/uc?id=FILE_ID` (works with frontend `normalizeFlyerUrl`).
+
+---
+
+### What was built (full Phase 2)
 
 | Piece | Path |
 |-------|------|
 | Pipeline orchestrator | `forwarder/event_pipeline/pipeline.py` |
-| Tier 1 keyword classifier | `forwarder/event_pipeline/classifier.py` |
+| Tier 1 keyword classifier (+ OCR) | `forwarder/event_pipeline/classifier.py` |
 | Tier 1 regex extractor | `forwarder/event_pipeline/extractor.py` |
+| Tier 2 Ollama | `forwarder/event_pipeline/local_llm.py` |
+| Tier 3 Gemini | `forwarder/event_pipeline/cloud_llm.py` |
+| Flyer OCR | `forwarder/event_pipeline/ocr.py` |
+| Google Drive upload | `forwarder/event_pipeline/google_drive.py` |
+| LLM prompts | `forwarder/event_pipeline/prompts.py` |
+| Ingest URL resolver | `forwarder/event_pipeline/ingest_resolver.py` |
 | Keyword dictionary | `forwarder/event_pipeline/event_keywords.yaml` |
 | Vercel ingest client | `forwarder/event_pipeline/ingest_client.py` |
-| Shared models | `forwarder/event_pipeline/models.py` |
-| Tier 2/3/OCR stubs | `local_llm.py`, `cloud_llm.py`, `ocr.py` |
-| Smoke test script | `forwarder/scripts/test_tier1.py` |
+| Replay on Sheets data | `forwarder/scripts/test_classifier_from_sheets.py` |
 
-**Parallel dispatch:** `app.py` runs existing `Forwarder` synchronously, then starts `EventPipeline.handle_webhook` in a background thread.
+---
+
+### Environment / config to enable
+
+**`evolution-api/.env`** (gitignored — never commit secrets):
+
+```bash
+PIPELINE_API_KEY=<same as Vercel>
+GEMINI_API_KEY=<from https://aistudio.google.com/apikey>
+# Path to JSON key file — NOT the JSON contents, NOT in the repo
+GOOGLE_SERVICE_ACCOUNT_JSON=/home/abd/.config/nctrianglemuslims/google-drive-sa.json
+```
+
+**`forwarder/config.yaml`:** set `event_pipeline.enabled: true`
+
+---
+
+### Python venv + easyocr (required on Ubuntu/Debian)
+
+System `pip install` fails with `externally-managed-environment` (PEP 668). Use the **forwarder venv**:
+
+```bash
+cd /mnt/1tb/evolution-api/forwarder
+bash scripts/setup-venv.sh
+```
+
+If `python3 -m venv` fails, the script falls back to `virtualenv.pyz`. Or install venv support once:
+
+```bash
+sudo apt install python3.12-venv
+bash scripts/setup-venv.sh
+```
+
+**Verify easyocr:**
+
+```bash
+./venv/bin/python -c "import easyocr; print('easyocr ok')"
+```
+
+**Run forwarder / tests with venv Python** (not system `python3`):
+
+```bash
+./venv/bin/python app.py
+./venv/bin/python scripts/test_tier1.py
+./venv/bin/python scripts/test_classifier_from_sheets.py --limit 20 --verbose
+```
+
+`scripts/start-all.sh` uses `forwarder/venv/bin/python` automatically when the venv exists.
+
+First OCR run downloads ~500MB of easyocr models to `~/.EasyOCR/`.
+
+---
+
+### Google Drive service account (flyer uploads)
+
+**Do not** put the JSON key in git. Store the file **outside the repo** and reference its path in `.env`.
+
+**Folder:** [FlyerUploads](https://drive.google.com/drive/folders/1RRVu2N65MXZXAEbw463L4GNkqCAloWr8?usp=sharing)  
+**Folder ID** (already in `config.yaml`): `1RRVu2N65MXZXAEbw463L4GNkqCAloWr8`
+
+#### 1. Create credentials (Google Cloud Console)
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → create/select a project
+2. **APIs & Services → Library** → enable **Google Drive API**
+3. **APIs & Services → Credentials → Create credentials → Service account**
+4. Name e.g. `flyer-uploader` → create
+5. Open the service account → **Keys → Add key → Create new key → JSON**
+6. Save the downloaded file outside the repo, e.g.:
+
+```bash
+mkdir -p ~/.config/nctrianglemuslims
+mv ~/Downloads/your-project-*.json ~/.config/nctrianglemuslims/google-drive-sa.json
+chmod 600 ~/.config/nctrianglemuslims/google-drive-sa.json
+```
+
+#### 2. Share the Drive folder with the service account
+
+Open the JSON and copy `"client_email"` (e.g. `flyer-uploader@your-project.iam.gserviceaccount.com`).
+
+In Google Drive, open **FlyerUploads** → **Share** → paste that email → role **Editor** → Send.
+
+Without this step uploads fail with permission errors.
+
+#### 3. Point the pipeline at the key file
+
+In **`evolution-api/.env`**:
+
+```bash
+GOOGLE_SERVICE_ACCOUNT_JSON=/home/abd/.config/nctrianglemuslims/google-drive-sa.json
+```
+
+Optional override in `forwarder/config.yaml`:
+
+```yaml
+google_service_account_json: /home/abd/.config/nctrianglemuslims/google-drive-sa.json
+google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
+```
+
+Uploaded flyers get URLs like `https://drive.google.com/uc?id=FILE_ID` (compatible with frontend `normalizeFlyerUrl`).
 
 ---
 
@@ -473,7 +593,7 @@ PIPELINE_API_KEY=<same key as nctrianglemuslims-ui / Vercel>
 
 **Auto-publish** (`status=published`) when Tier 1 extracts `eventName` + `eventDate` and score ≥ `auto_publish_min_score` (default 0.5).
 
-**Otherwise:** `needs_tier2` logged — Ollama/cloud/OCR not wired yet.
+**Otherwise:** escalates to **Tier 2 Ollama** → **Tier 3 Gemini** if extraction or confidence is insufficient.
 
 **Dedup:** in-memory `seen_ids` locally + `whatsappMessageId` check on ingest API.
 
@@ -483,7 +603,7 @@ PIPELINE_API_KEY=<same key as nctrianglemuslims-ui / Vercel>
 
 ```bash
 cd /mnt/1tb/evolution-api/forwarder
-python3 scripts/test_tier1.py
+./venv/bin/python scripts/test_tier1.py
 ```
 
 Expected: keyword score ~0.71, extracted event name/date/location/time.
@@ -492,20 +612,34 @@ Expected: keyword score ~0.71, extracted event name/date/location/time.
 
 ### Classifier replay on real Sheets data (dry-run)
 
-Replay Tier 1 against the same Google Sheets CSV used for import — no ingest writes by default.
+Replay full Tier 1 path with **flyer OCR** and optional **Tier 2 Ollama** against the Google Sheets CSV.
 
 ```bash
 cd /mnt/1tb/evolution-api/forwarder
 
-# Dry-run: first 50 rows, verbose
-python3 scripts/test_classifier_from_sheets.py --limit 50 --verbose
+# Default: OCR on flyerURL + Tier 2 on reject/failed extraction
+./venv/bin/python scripts/test_classifier_from_sheets.py --limit 50 --verbose
 
-# All rows, summary only
-python3 scripts/test_classifier_from_sheets.py
+# Text-only (old behavior)
+./venv/bin/python scripts/test_classifier_from_sheets.py --no-ocr --no-tier2 --limit 20
 
-# Load from API instead of CSV (local :5177 if running, else Vercel)
-python3 scripts/test_classifier_from_sheets.py --source api --limit 20 --verbose
+# Single event by name
+./venv/bin/python scripts/test_classifier_from_sheets.py --name "Being Muslim Together" --verbose
+
+# Load from API instead of CSV
+./venv/bin/python scripts/test_classifier_from_sheets.py --source api --limit 20 --verbose
 ```
+
+**Flags:**
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--no-ocr` | off | Skip flyer download + easyocr |
+| `--no-tier2` | off | Skip Ollama when rejected or Tier 1 extraction fails |
+| `--name` | all | Filter rows by event name substring |
+| `--ingest` | off | POST drafts to ingest API |
+
+Verbose output includes `ocr=<chars>`, `tier=tier1|tier2`, `tier2=ran`.
 
 **Ingest URL resolution** (`ingest_resolver.py`):
 
@@ -535,26 +669,32 @@ python3 scripts/test_classifier_from_sheets.py --limit 10 --ingest --status draf
 ### Phase 2 checklist
 
 - [x] `event_pipeline/` module structure
-- [x] Tier 1 keyword classifier + `event_keywords.yaml`
+- [x] Tier 1 keyword classifier + OCR before reject (`classifier.py`)
 - [x] Tier 1 regex extractor (name, date, time, location)
+- [x] Tier 2 Ollama (`llama3.1:8b`) classify + extract
+- [x] Tier 3 Gemini (`gemini-2.0-flash`) text + vision fallback
+- [x] easyocr flyer OCR
+- [x] Google Drive flyer upload (folder `1RRVu2N65MXZXAEbw463L4GNkqCAloWr8`)
+- [x] Tier cascade in `handle_webhook` (Tier 1 → 2 → 3, not stub return)
 - [x] Ingest client → `POST /api/events/ingest`
-- [x] Parallel dispatch in `app.py`
-- [x] Config section in `config.yaml` / `config.example.yaml`
-- [x] Smoke test script
 - [x] Ingest URL resolver (local :5177 → Vercel fallback)
-- [x] Classifier replay script on Sheets CSV / API (`test_classifier_from_sheets.py`)
-- [ ] Enable pipeline + end-to-end test (real WhatsApp message → Vercel calendar)
-- [ ] Tier 2 — Ollama local LLM classify + extract
-- [ ] Tier 3 — Groq/Gemini cloud fallback
-- [ ] Flyer OCR (easyocr) + image upload
-- [ ] SQLite dedup persistence (Phase 4)
+- [x] Parallel dispatch in `app.py`
+- [x] Classifier replay script on Sheets CSV / API
+- [x] Config + `requirements.txt` + `.env.example`
+- [x] `forwarder/venv` + easyocr installed (`bash forwarder/scripts/setup-venv.sh`)
+- [x] Add `GEMINI_API_KEY` + `GOOGLE_SERVICE_ACCOUNT_JSON` to `.env`
+- [x] Share Drive folder with service account
+- [ ] Enable pipeline + end-to-end test (real WhatsApp message → calendar)
 
 ---
 
-### Next up (Phase 2 continued)
+### Next up (Phase 2 cutover)
 
-1. Enable pipeline against Vercel preview and send a test event message in a source group
-2. Implement Tier 2 Ollama extraction for messages that pass keywords but fail Tier 1 regex
+1. Confirm `./forwarder/venv/bin/python -c "import easyocr"` works
+2. Set `event_pipeline.enabled: true` and restart forwarder
+4. Send test event message in a source group → verify on Vercel calendar
+
+Phase 4: SQLite dedup persistence, pm2, rate limits — see plan.
 
 See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(plan)Evolution-API-Message-to-Website-Calendar-Database.md).
 

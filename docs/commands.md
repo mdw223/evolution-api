@@ -203,18 +203,25 @@ pkill -f "tsx watch ./src/main.ts"
 
 Requires Evolution API running (webhooks go to `:5000`).
 
+**One-time setup** (venv + easyocr — system `pip` is blocked on Ubuntu):
+
+```bash
+cd /mnt/1tb/evolution-api/forwarder
+bash scripts/setup-venv.sh
+```
+
 **Start (foreground):**
 
 ```bash
 cd /mnt/1tb/evolution-api/forwarder
-python3 app.py
+./venv/bin/python app.py
 ```
 
 **Start (background):**
 
 ```bash
 cd /mnt/1tb/evolution-api/forwarder
-nohup python3 app.py >> ../logs/forwarder.log 2>&1 &
+nohup ./venv/bin/python app.py >> ../logs/forwarder.log 2>&1 &
 ```
 
 **Check:**

@@ -23,6 +23,16 @@ class ClassificationResult:
     action: Literal["reject", "pass", "force_pass"]
     matched_keywords: list[str] = field(default_factory=list)
     matched_phrases: list[str] = field(default_factory=list)
+    ocr_text: str = ""
+    combined_text: str = ""
+
+
+@dataclass
+class ExtractionResult:
+    is_event: bool
+    confidence: float
+    event: EventData | None = None
+    raw_response: str = ""
 
 
 @dataclass

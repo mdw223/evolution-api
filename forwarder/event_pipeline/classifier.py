@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
 from .models import ClassificationResult
+
+if TYPE_CHECKING:
+    from .ocr import FlyerOcr
+
+logger = logging.getLogger(__name__)
 
 DATE_PATTERN = re.compile(
     r"\b("
@@ -29,9 +36,11 @@ class EventClassifier:
         keywords_path: Path,
         min_score_pass: float = 0.3,
         min_score_reject: float = 0.1,
+        ocr: FlyerOcr | None = None,
     ):
         self.min_score_pass = min_score_pass
         self.min_score_reject = min_score_reject
+        self._ocr = ocr
 
         with open(keywords_path) as f:
             data = yaml.safe_load(f) or {}
@@ -39,8 +48,27 @@ class EventClassifier:
         self.keywords = [k.lower() for k in data.get("keywords", [])]
         self.phrases = [p.lower() for p in data.get("phrases", [])]
 
-    def classify(self, text: str, *, has_image: bool = False) -> ClassificationResult:
-        normalized = (text or "").lower()
+    def classify(
+        self,
+        text: str,
+        *,
+        has_image: bool = False,
+        image_base64: str | None = None,
+    ) -> ClassificationResult:
+        caption = (text or "").strip()
+        ocr_text = ""
+
+        if has_image and image_base64 and self._ocr:
+            try:
+                ocr_text = (self._ocr.extract_text(image_base64) or "").strip()
+                if ocr_text:
+                    logger.info("Classifier OCR added %d chars before scoring", len(ocr_text))
+            except Exception as exc:
+                logger.warning("Classifier OCR failed: %s", exc)
+
+        combined = "\n".join(part for part in (caption, ocr_text) if part)
+        normalized = combined.lower()
+
         matched_keywords: list[str] = []
         matched_phrases: list[str] = []
 
@@ -59,12 +87,25 @@ class EventClassifier:
 
         score = min(1.0, keyword_score + phrase_score + date_bonus + time_bonus)
 
-        if has_image and (normalized.strip() or score >= self.min_score_reject):
+        # Standalone flyer images always continue to Tier 2 (even if OCR empty)
+        if has_image and not combined.strip():
             return ClassificationResult(
                 score=max(score, self.min_score_pass),
                 action="force_pass",
                 matched_keywords=matched_keywords,
                 matched_phrases=matched_phrases,
+                ocr_text=ocr_text,
+                combined_text=combined,
+            )
+
+        if has_image and (combined.strip() or score >= self.min_score_reject):
+            return ClassificationResult(
+                score=max(score, self.min_score_pass),
+                action="force_pass",
+                matched_keywords=matched_keywords,
+                matched_phrases=matched_phrases,
+                ocr_text=ocr_text,
+                combined_text=combined,
             )
 
         if score < self.min_score_reject:
@@ -79,4 +120,6 @@ class EventClassifier:
             action=action,
             matched_keywords=matched_keywords,
             matched_phrases=matched_phrases,
+            ocr_text=ocr_text,
+            combined_text=combined,
         )

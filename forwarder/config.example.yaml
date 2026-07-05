@@ -55,4 +55,16 @@ event_pipeline:
   min_score_pass: 0.3
   min_score_reject: 0.1
   auto_publish_min_score: 0.5
+  tier2_publish_min_confidence: 0.75
+  tier3_publish_min_confidence: 0.65
   keywords_file: event_keywords.yaml
+  ollama_url: http://localhost:11434
+  ollama_model: llama3.1:8b
+  ollama_timeout: 120
+  gemini_model: gemini-2.0-flash
+  gemini_timeout: 90
+  easyocr_languages:
+    - en
+  easyocr_gpu: false
+  google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
+  google_service_account_json:

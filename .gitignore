@@ -38,6 +38,10 @@ lerna-debug.log*
 /src/env.yml
 /store
 *.env
+# Google service account keys (never commit)
+*-sa.json
+*service-account*.json
+google-drive*.json
 
 /temp/*
 

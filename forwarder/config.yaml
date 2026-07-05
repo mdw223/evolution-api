@@ -45,7 +45,7 @@ source_group_jids:
   - "120363404196239378@g.us"
 
 event_pipeline:
-  enabled: false
+  enabled: true
   ingest_url_local: http://localhost:5177/api/events/ingest
   ingest_url: https://nctrianglemuslims-ui-git-test-75e30a-nctrianglemuslims-projects.vercel.app/api/events/ingest
   prefer_local_ingest: true
@@ -53,4 +53,20 @@ event_pipeline:
   min_score_pass: 0.3
   min_score_reject: 0.1
   auto_publish_min_score: 0.5
+  tier2_publish_min_confidence: 0.75
+  tier3_publish_min_confidence: 0.65
   keywords_file: event_keywords.yaml
+  # Tier 2 — Ollama
+  ollama_url: http://localhost:11434
+  ollama_model: llama3.1:8b
+  ollama_timeout: 120
+  # Tier 3 — Gemini (GEMINI_API_KEY in ../.env)
+  gemini_model: gemini-2.0-flash
+  gemini_timeout: 90
+  # OCR
+  easyocr_languages:
+    - en
+  easyocr_gpu: false
+  # Flyer upload — share folder with service account email
+  google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
+google_service_account_json: /home/abd/.config/nctrianglemuslims/google-drive-sa.json

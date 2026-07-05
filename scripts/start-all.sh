@@ -132,7 +132,13 @@ else
 
   log "Starting Python forwarder on :5000..."
   cd "$FORWARDER_DIR"
-  nohup setsid python3 app.py >> "$LOG_DIR/forwarder.log" 2>&1 &
+  FWD_PYTHON="python3"
+  if [ -x "$FORWARDER_DIR/venv/bin/python" ]; then
+    FWD_PYTHON="$FORWARDER_DIR/venv/bin/python"
+  else
+    log "WARNING: forwarder/venv not found — run forwarder/scripts/setup-venv.sh (easyocr may be missing)"
+  fi
+  nohup setsid "$FWD_PYTHON" app.py >> "$LOG_DIR/forwarder.log" 2>&1 &
 
   sleep 1
   FWD_PID=$(find_forwarder_pid || true)

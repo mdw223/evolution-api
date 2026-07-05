@@ -4,13 +4,18 @@ import logging
 import re
 from pathlib import Path
 
+import requests
 import yaml
 
 from .classifier import EventClassifier
+from .cloud_llm import CloudLlmExtractor
 from .extractor import Tier1Extractor
+from .google_drive import GoogleDriveUploader
 from .ingest_client import IngestClient
 from .ingest_resolver import resolve_ingest_url
-from .models import IncomingMessage
+from .local_llm import LocalLlmExtractor
+from .models import ClassificationResult, EventData, IncomingMessage
+from .ocr import FlyerOcr
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,8 @@ class EventPipeline:
         pipeline_cfg = self.config.get("event_pipeline") or {}
         self.enabled = bool(pipeline_cfg.get("enabled", False))
         self.auto_publish_min_score = float(pipeline_cfg.get("auto_publish_min_score", 0.5))
+        self.tier2_publish_min = float(pipeline_cfg.get("tier2_publish_min_confidence", 0.75))
+        self.tier3_publish_min = float(pipeline_cfg.get("tier3_publish_min_confidence", 0.65))
 
         self.instance = self.config["instance"]
         self.evolution_url = self.config["evolution_url"].rstrip("/")
@@ -39,12 +46,44 @@ class EventPipeline:
         keywords_file = pipeline_cfg.get("keywords_file", "event_keywords.yaml")
         keywords_path = Path(__file__).parent / keywords_file
 
+        self.ocr = FlyerOcr(
+            languages=pipeline_cfg.get("easyocr_languages") or ["en"],
+            gpu=bool(pipeline_cfg.get("easyocr_gpu", False)),
+        )
         self.classifier = EventClassifier(
             keywords_path=keywords_path,
             min_score_pass=float(pipeline_cfg.get("min_score_pass", 0.3)),
             min_score_reject=float(pipeline_cfg.get("min_score_reject", 0.1)),
+            ocr=self.ocr,
         )
         self.extractor = Tier1Extractor()
+
+        self.tier2 = LocalLlmExtractor(
+            base_url=pipeline_cfg.get("ollama_url", "http://localhost:11434"),
+            model=pipeline_cfg.get("ollama_model", "llama3.1:8b"),
+            timeout=int(pipeline_cfg.get("ollama_timeout", 120)),
+        )
+        gemini_key = pipeline_cfg.get("gemini_api_key") or self._load_env_value(
+            base.parent / ".env", "GEMINI_API_KEY"
+        )
+        self.tier3 = CloudLlmExtractor(
+            api_key=gemini_key,
+            model=pipeline_cfg.get("gemini_model", "gemini-2.0-flash"),
+            timeout=int(pipeline_cfg.get("gemini_timeout", 90)),
+        )
+
+        drive_creds = pipeline_cfg.get("google_service_account_json") or self._load_env_value(
+            base.parent / ".env", "GOOGLE_SERVICE_ACCOUNT_JSON"
+        )
+        drive_folder = pipeline_cfg.get(
+            "google_drive_folder_id", "1RRVu2N65MXZXAEbw463L4GNkqCAloWr8"
+        )
+        self.drive: GoogleDriveUploader | None = None
+        if drive_creds and drive_folder:
+            self.drive = GoogleDriveUploader(drive_folder, drive_creds)
+
+        self.session = requests.Session()
+        self.session.headers.update({"apikey": self.api_key, "Content-Type": "application/json"})
 
         self.ingest: IngestClient | None = None
         self.ingest_backend: str | None = None
@@ -70,6 +109,9 @@ class EventPipeline:
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
         return ""
 
+    def _url(self, path: str) -> str:
+        return f"{self.evolution_url}/{path.lstrip('/')}"
+
     def _group_label(self, jid: str) -> str:
         return self.group_labels.get(jid, jid.split("@")[0])
 
@@ -80,6 +122,17 @@ class EventPipeline:
             self.seen_ids.clear()
         self.seen_ids.add(msg_id)
         return True
+
+    def _get_media_base64(self, data: dict) -> tuple[str | None, str | None]:
+        body = {"message": data}
+        resp = self.session.post(
+            self._url(f"chat/getBase64FromMediaMessage/{self.instance}"),
+            json=body,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload.get("base64"), payload.get("mimetype")
 
     @staticmethod
     def _extract_text(data: dict) -> str | None:
@@ -138,6 +191,132 @@ class EventPipeline:
             raw_data=data,
         )
 
+    def _message_for_extraction(
+        self, message: IncomingMessage, classification: ClassificationResult
+    ) -> IncomingMessage:
+        if classification.combined_text and classification.combined_text != message.text:
+            return IncomingMessage(
+                message_id=message.message_id,
+                remote_jid=message.remote_jid,
+                group_name=message.group_name,
+                sender_name=message.sender_name,
+                text=classification.combined_text,
+                has_image=message.has_image,
+                raw_data=message.raw_data,
+            )
+        return message
+
+    def _attach_flyer(
+        self,
+        event: EventData,
+        image_base64: str | None,
+        mimetype: str | None,
+        message_id: str,
+    ) -> None:
+        if not image_base64 or not self.drive:
+            return
+        ext = "jpg"
+        if mimetype and "png" in mimetype:
+            ext = "png"
+        url = self.drive.upload_image(image_base64, f"event-{message_id[:16]}.{ext}", mimetype or "image/jpeg")
+        if url:
+            event.flyer_url = url
+
+    def _ingest_event(self, event: EventData, classification_score: float) -> dict:
+        assert self.ingest is not None
+        result = self.ingest.create_event(event)
+        return {
+            "status": result.get("status", "created"),
+            "score": classification_score,
+            "event_status": event.status,
+            "extraction_tier": event.extraction_tier,
+            "confidence": event.confidence_score,
+        }
+
+    def _run_tier2(
+        self,
+        message: IncomingMessage,
+        text: str,
+        classification: ClassificationResult,
+        image_base64: str | None,
+        mimetype: str | None,
+    ) -> dict:
+        logger.info("Tier 2 Ollama for message id=%s", message.message_id)
+        if not self.tier2.available():
+            logger.warning("Ollama unavailable — skipping Tier 2")
+            return self._run_tier3(message, text, classification, image_base64, mimetype, reason="ollama_unavailable")
+
+        result = self.tier2.classify_and_extract(text, message)
+        if not result.is_event or not result.event:
+            logger.info("Tier 2: not an event or incomplete extraction id=%s", message.message_id)
+            return self._run_tier3(message, text, classification, image_base64, mimetype, reason="tier2_no_event")
+
+        event = result.event
+        event.confidence_score = result.confidence
+        if result.confidence >= self.tier2_publish_min:
+            event.status = "published"
+        else:
+            event.status = "draft"
+            if result.confidence < self.tier2_publish_min:
+                return self._run_tier3(
+                    message, text, classification, image_base64, mimetype, reason="tier2_low_confidence", partial=event
+                )
+
+        self._attach_flyer(event, image_base64, mimetype, message.message_id)
+        try:
+            return self._ingest_event(event, classification.score)
+        except Exception as exc:
+            logger.exception("Tier 2 ingest failed id=%s", message.message_id)
+            return {"status": "error", "reason": str(exc), "extraction_tier": "tier2"}
+
+    def _run_tier3(
+        self,
+        message: IncomingMessage,
+        text: str,
+        classification: ClassificationResult,
+        image_base64: str | None,
+        mimetype: str | None,
+        *,
+        reason: str = "tier2_escalation",
+        partial: EventData | None = None,
+    ) -> dict:
+        logger.info("Tier 3 Gemini for message id=%s (reason=%s)", message.message_id, reason)
+        if not self.tier3.available():
+            logger.warning("Gemini unavailable — saving draft if partial event exists")
+            if partial:
+                partial.status = "draft"
+                try:
+                    return self._ingest_event(partial, classification.score)
+                except Exception as exc:
+                    return {"status": "error", "reason": str(exc)}
+            return {"status": "needs_tier3", "reason": "gemini_api_key_missing"}
+
+        result = self.tier3.classify_and_extract(
+            text,
+            message,
+            image_base64=image_base64,
+            ocr_text=classification.ocr_text,
+        )
+        if not result.is_event or not result.event:
+            if partial:
+                partial.status = "draft"
+                partial.extraction_tier = "tier2"
+                try:
+                    return self._ingest_event(partial, classification.score)
+                except Exception as exc:
+                    return {"status": "error", "reason": str(exc)}
+            return {"status": "rejected", "reason": "tier3_not_event", "score": classification.score}
+
+        event = result.event
+        event.confidence_score = result.confidence
+        event.status = "published" if result.confidence >= self.tier3_publish_min else "draft"
+        self._attach_flyer(event, image_base64, mimetype, message.message_id)
+        try:
+            return self._ingest_event(event, classification.score)
+        except Exception as exc:
+            logger.exception("Tier 3 ingest failed id=%s", message.message_id)
+            return {"status": "error", "reason": str(exc), "extraction_tier": "tier3"}
+
     def handle_webhook(self, payload: dict) -> dict:
         if not self.enabled:
             return {"status": "disabled"}
@@ -146,13 +325,26 @@ class EventPipeline:
         if not message:
             return {"status": "ignored"}
 
-        classification = self.classifier.classify(message.text, has_image=message.has_image)
+        image_base64: str | None = None
+        mimetype: str | None = None
+        if message.has_image:
+            try:
+                image_base64, mimetype = self._get_media_base64(message.raw_data)
+            except Exception as exc:
+                logger.warning("Failed to download image for id=%s: %s", message.message_id, exc)
+
+        classification = self.classifier.classify(
+            message.text,
+            has_image=message.has_image,
+            image_base64=image_base64,
+        )
         logger.info(
-            "Pipeline classify id=%s score=%.2f action=%s keywords=%s",
+            "Pipeline classify id=%s score=%.2f action=%s keywords=%s ocr_chars=%d",
             message.message_id,
             classification.score,
             classification.action,
             classification.matched_keywords[:5],
+            len(classification.ocr_text),
         )
 
         if classification.action == "reject":
@@ -162,28 +354,26 @@ class EventPipeline:
                 "reason": "below_keyword_threshold",
             }
 
-        event = self.extractor.extract(message, confidence=classification.score)
-        if not event:
-            return {
-                "status": "needs_tier2",
-                "score": classification.score,
-                "reason": "tier1_extraction_incomplete",
-            }
+        extract_message = self._message_for_extraction(message, classification)
+        event = self.extractor.extract(extract_message, confidence=classification.score)
 
-        if classification.score >= self.auto_publish_min_score:
-            event.status = "published"
-        else:
-            event.status = "draft"
+        if event:
+            event.extraction_tier = "tier1"
+            event.confidence_score = classification.score
+            if classification.score >= self.auto_publish_min_score:
+                event.status = "published"
+            else:
+                event.status = "draft"
+            self._attach_flyer(event, image_base64, mimetype, message.message_id)
+            try:
+                return self._ingest_event(event, classification.score)
+            except Exception as exc:
+                logger.exception("Tier 1 ingest failed for id=%s", message.message_id)
+                return {"status": "error", "reason": str(exc)}
 
-        try:
-            assert self.ingest is not None
-            result = self.ingest.create_event(event)
-            return {
-                "status": result.get("status", "created"),
-                "score": classification.score,
-                "event_status": event.status,
-                "extraction_tier": event.extraction_tier,
-            }
-        except Exception as exc:
-            logger.exception("Pipeline ingest failed for id=%s", message.message_id)
-            return {"status": "error", "reason": str(exc)}
+        logger.info(
+            "Tier 1 extraction incomplete for id=%s — escalating to Tier 2",
+            message.message_id,
+        )
+        text = classification.combined_text or message.text
+        return self._run_tier2(message, text, classification, image_base64, mimetype)
