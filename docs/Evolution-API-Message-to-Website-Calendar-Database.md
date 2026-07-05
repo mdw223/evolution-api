@@ -405,3 +405,112 @@ Event pipeline on Linux server — keyword filter + ingest client posting to `/a
 
 See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(plan)Evolution-API-Message-to-Website-Calendar-Database.md).
 
+---
+
+## Phase 2 — Event pipeline on Linux server
+
+**Status:** In progress — **Tier 1 + ingest client implemented** (2026-07-05). Tier 2/3/OCR stubs only.
+
+**Goal:** Detect event announcements in source WhatsApp groups and POST structured events to Vercel `POST /api/events/ingest`.
+
+**Location:** `forwarder/event_pipeline/` — dispatched in parallel from `forwarder/app.py` (same port 5000 webhook).
+
+---
+
+### What was built (Tier 1)
+
+| Piece | Path |
+|-------|------|
+| Pipeline orchestrator | `forwarder/event_pipeline/pipeline.py` |
+| Tier 1 keyword classifier | `forwarder/event_pipeline/classifier.py` |
+| Tier 1 regex extractor | `forwarder/event_pipeline/extractor.py` |
+| Keyword dictionary | `forwarder/event_pipeline/event_keywords.yaml` |
+| Vercel ingest client | `forwarder/event_pipeline/ingest_client.py` |
+| Shared models | `forwarder/event_pipeline/models.py` |
+| Tier 2/3/OCR stubs | `local_llm.py`, `cloud_llm.py`, `ocr.py` |
+| Smoke test script | `forwarder/scripts/test_tier1.py` |
+
+**Parallel dispatch:** `app.py` runs existing `Forwarder` synchronously, then starts `EventPipeline.handle_webhook` in a background thread.
+
+---
+
+### Configuration
+
+Add to `forwarder/config.yaml` (see `config.example.yaml`):
+
+```yaml
+event_pipeline:
+  enabled: false   # set true when ready
+  ingest_url: https://<your-preview-or-prod>.vercel.app/api/events/ingest
+  pipeline_api_key:   # loaded from ../.env PIPELINE_API_KEY if empty
+  min_score_pass: 0.3
+  min_score_reject: 0.1
+  auto_publish_min_score: 0.5
+  keywords_file: event_keywords.yaml
+```
+
+Add to **`/mnt/1tb/evolution-api/.env`** (same value as Vercel `PIPELINE_API_KEY`):
+
+```bash
+PIPELINE_API_KEY=<same key as nctrianglemuslims-ui / Vercel>
+```
+
+**Enable checklist:**
+1. Set `ingest_url` to your Vercel preview or production URL
+2. Add `PIPELINE_API_KEY` to `evolution-api/.env`
+3. Set `event_pipeline.enabled: true` in `forwarder/config.yaml`
+4. Restart forwarder (`app.py`)
+
+---
+
+### Tier 1 behavior
+
+| Score | Action |
+|-------|--------|
+| `< 0.1` | Hard reject (unless image with caption) |
+| `≥ 0.3` | Pass to extraction |
+| Image + caption | Always pass (`force_pass`) |
+
+**Auto-publish** (`status=published`) when Tier 1 extracts `eventName` + `eventDate` and score ≥ `auto_publish_min_score` (default 0.5).
+
+**Otherwise:** `needs_tier2` logged — Ollama/cloud/OCR not wired yet.
+
+**Dedup:** in-memory `seen_ids` locally + `whatsappMessageId` check on ingest API.
+
+---
+
+### Local smoke test (no webhook)
+
+```bash
+cd /mnt/1tb/evolution-api/forwarder
+python3 scripts/test_tier1.py
+```
+
+Expected: keyword score ~0.71, extracted event name/date/location/time.
+
+---
+
+### Phase 2 checklist
+
+- [x] `event_pipeline/` module structure
+- [x] Tier 1 keyword classifier + `event_keywords.yaml`
+- [x] Tier 1 regex extractor (name, date, time, location)
+- [x] Ingest client → `POST /api/events/ingest`
+- [x] Parallel dispatch in `app.py`
+- [x] Config section in `config.yaml` / `config.example.yaml`
+- [x] Smoke test script
+- [ ] Enable pipeline + end-to-end test (real WhatsApp message → Vercel calendar)
+- [ ] Tier 2 — Ollama local LLM classify + extract
+- [ ] Tier 3 — Groq/Gemini cloud fallback
+- [ ] Flyer OCR (easyocr) + image upload
+- [ ] SQLite dedup persistence (Phase 4)
+
+---
+
+### Next up (Phase 2 continued)
+
+1. Enable pipeline against Vercel preview and send a test event message in a source group
+2. Implement Tier 2 Ollama extraction for messages that pass keywords but fail Tier 1 regex
+
+See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(plan)Evolution-API-Message-to-Website-Calendar-Database.md).
+

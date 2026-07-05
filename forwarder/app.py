@@ -1,11 +1,13 @@
 import json
 import logging
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
 
+from event_pipeline import EventPipeline
 from forwarder import Forwarder
 
 logging.basicConfig(
@@ -15,6 +17,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 forwarder = Forwarder()
+
+try:
+    event_pipeline = EventPipeline()
+except Exception as exc:
+    logger.error("Event pipeline failed to initialize: %s", exc)
+    event_pipeline = None
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
@@ -31,7 +39,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if urlparse(self.path).path == "/health":
-            self._send_json(200, {"status": "ok", "instance": forwarder.instance})
+            body = {
+                "status": "ok",
+                "instance": forwarder.instance,
+                "event_pipeline": bool(event_pipeline and event_pipeline.enabled),
+            }
+            self._send_json(200, body)
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -51,6 +64,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
         event = payload.get("event", "unknown")
         logger.info("Webhook received: event=%s", event)
         result = forwarder.handle_webhook(payload)
+
+        if event_pipeline and event_pipeline.enabled:
+            threading.Thread(
+                target=event_pipeline.handle_webhook,
+                args=(payload,),
+                daemon=True,
+                name="event-pipeline",
+            ).start()
+
         self._send_json(200, result)
 
 

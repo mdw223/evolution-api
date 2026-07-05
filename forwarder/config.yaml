@@ -43,3 +43,12 @@ source_group_jids:
   - "120363149724432358@g.us"
   - "19194378751-1611302422@g.us"
   - "120363404196239378@g.us"
+
+event_pipeline:
+  enabled: false
+  ingest_url: https://nctrianglemuslims-ui-git-test-75e30a-nctrianglemuslims-projects.vercel.app/api/events/ingest # https://your-preview.vercel.app/api/events/ingest
+  pipeline_api_key:
+  min_score_pass: 0.3
+  min_score_reject: 0.1
+  auto_publish_min_score: 0.5
+  keywords_file: event_keywords.yaml
