@@ -47,7 +47,9 @@ source_group_jids:
 # Event pipeline — WhatsApp messages → Vercel Postgres ingest API
 event_pipeline:
   enabled: false
+  ingest_url_local: http://localhost:5177/api/events/ingest
   ingest_url: https://your-preview.vercel.app/api/events/ingest
+  prefer_local_ingest: true
   # pipeline_api_key loaded from ../.env PIPELINE_API_KEY if empty
   pipeline_api_key:
   min_score_pass: 0.3

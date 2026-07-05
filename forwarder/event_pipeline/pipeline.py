@@ -9,6 +9,7 @@ import yaml
 from .classifier import EventClassifier
 from .extractor import Tier1Extractor
 from .ingest_client import IngestClient
+from .ingest_resolver import resolve_ingest_url
 from .models import IncomingMessage
 
 logger = logging.getLogger(__name__)
@@ -46,16 +47,16 @@ class EventPipeline:
         self.extractor = Tier1Extractor()
 
         self.ingest: IngestClient | None = None
+        self.ingest_backend: str | None = None
         if self.enabled:
-            ingest_url = pipeline_cfg.get("ingest_url", "").strip()
             pipeline_api_key = pipeline_cfg.get("pipeline_api_key") or self._load_env_value(
                 base.parent / ".env", "PIPELINE_API_KEY"
             )
-            if not ingest_url:
-                raise ValueError("event_pipeline.ingest_url is required when enabled")
             if not pipeline_api_key:
                 raise ValueError("PIPELINE_API_KEY is required when event pipeline is enabled")
+            ingest_url, backend = resolve_ingest_url(pipeline_cfg)
             self.ingest = IngestClient(ingest_url, pipeline_api_key)
+            self.ingest_backend = backend
 
         self.seen_ids: set[str] = set()
         self.max_seen = 5000

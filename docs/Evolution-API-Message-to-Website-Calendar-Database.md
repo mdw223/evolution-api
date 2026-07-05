@@ -490,6 +490,48 @@ Expected: keyword score ~0.71, extracted event name/date/location/time.
 
 ---
 
+### Classifier replay on real Sheets data (dry-run)
+
+Replay Tier 1 against the same Google Sheets CSV used for import — no ingest writes by default.
+
+```bash
+cd /mnt/1tb/evolution-api/forwarder
+
+# Dry-run: first 50 rows, verbose
+python3 scripts/test_classifier_from_sheets.py --limit 50 --verbose
+
+# All rows, summary only
+python3 scripts/test_classifier_from_sheets.py
+
+# Load from API instead of CSV (local :5177 if running, else Vercel)
+python3 scripts/test_classifier_from_sheets.py --source api --limit 20 --verbose
+```
+
+**Ingest URL resolution** (`ingest_resolver.py`):
+
+| Priority | URL | When |
+|----------|-----|------|
+| 1 | `ingest_url_local` (`http://localhost:5177/api/events/ingest`) | `prefer_local_ingest: true` and `pnpm dev:api` is up |
+| 2 | `ingest_url` (Vercel preview) | Local API not reachable |
+
+Config keys in `forwarder/config.yaml`:
+
+```yaml
+event_pipeline:
+  ingest_url_local: http://localhost:5177/api/events/ingest
+  ingest_url: https://<preview>.vercel.app/api/events/ingest
+  prefer_local_ingest: true
+```
+
+**Optional ingest** (writes `draft` replays with `whatsappMessageId: replay-{rowId}`):
+
+```bash
+# Requires PIPELINE_API_KEY in evolution-api/.env
+python3 scripts/test_classifier_from_sheets.py --limit 10 --ingest --status draft --verbose
+```
+
+---
+
 ### Phase 2 checklist
 
 - [x] `event_pipeline/` module structure
@@ -499,6 +541,8 @@ Expected: keyword score ~0.71, extracted event name/date/location/time.
 - [x] Parallel dispatch in `app.py`
 - [x] Config section in `config.yaml` / `config.example.yaml`
 - [x] Smoke test script
+- [x] Ingest URL resolver (local :5177 → Vercel fallback)
+- [x] Classifier replay script on Sheets CSV / API (`test_classifier_from_sheets.py`)
 - [ ] Enable pipeline + end-to-end test (real WhatsApp message → Vercel calendar)
 - [ ] Tier 2 — Ollama local LLM classify + extract
 - [ ] Tier 3 — Groq/Gemini cloud fallback
