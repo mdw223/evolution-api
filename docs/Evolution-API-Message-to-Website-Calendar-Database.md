@@ -679,7 +679,7 @@ python3 scripts/test_classifier_from_sheets.py --limit 10 --ingest --status draf
 - [x] `forwarder/venv` + easyocr installed (`bash forwarder/scripts/setup-venv.sh`)
 - [x] Add `GEMINI_API_KEY` + `GOOGLE_SERVICE_ACCOUNT_JSON` to `.env`
 - [x] Share Drive folder with service account
-- [ ] Enable pipeline + end-to-end test (real WhatsApp message → calendar)
+- [x] Enable pipeline + end-to-end test (real WhatsApp message → calendar)
 
 ---
 
@@ -691,9 +691,99 @@ python3 scripts/test_classifier_from_sheets.py --limit 10 --ingest --status draf
 
 Phase 4: SQLite dedup persistence, pm2, rate limits — see plan.
 
-**Phase 5 — Admin dashboard: recurring events**
+---
 
-Pipeline may extract events like “Every Monday” without a single `eventDate`. Tier cascade now infers the **next occurrence** as a draft placeholder (`event_merge.infer_recurring_date`). Admin UI should let editors mark events as **recurring** (e.g. weekly on Monday) and manage series separately from one-off dates — `nctrianglemuslims-ui` dashboard work, not forwarder.
+## Phase 3 — Admin dashboard
+
+**Status:** Implemented locally (2026-07-06). Vercel env + deploy TODO.
+
+**Goal:** Password-protected `/admin` spreadsheet UI to edit, hide, delete, and feature events ingested by the pipeline.
+
+**Repo:** `/mnt/1tb/nctrianglemuslims-ui`
+
+---
+
+### What was built
+
+| Piece | Path |
+|-------|------|
+| Admin auth (signed cookie) | `api/lib/admin-auth.ts` |
+| Login / logout / session | `api/admin/login.ts`, `logout.ts`, `session.ts` |
+| List events (all statuses) | `api/admin/events.ts` → `GET /api/admin/events` |
+| Edit / delete event | `api/admin/events/[id].ts` → `PATCH`, `DELETE` |
+| Admin API client | `src/lib/admin-api.ts` |
+| Admin page | `src/pages/AdminPage.tsx` → `/admin` |
+| Login form | `src/components/admin/AdminLoginForm.tsx` |
+| AG Grid table | `src/components/admin/AdminEventsGrid.tsx` |
+| Dev API routes | `scripts/dev-api-server.ts` (admin endpoints wired) |
+
+**Auth MVP:** `ADMIN_PASSWORD` + `ADMIN_SESSION_SECRET` (falls back to `PIPELINE_API_KEY` for signing). HttpOnly cookie, 7-day session.
+
+**UI features:**
+- Filter tabs: All / Published / Hidden / Draft
+- Search by name, location, host, source group
+- Inline cell edit (blur to save → `PATCH`)
+- Actions: Feature ★, Hide, Delete
+- Pipeline columns: source group, extraction tier, confidence
+
+---
+
+### Environment setup
+
+Add to **`nctrianglemuslims-ui/.env.local`** (and Vercel Preview + Production):
+
+```bash
+ADMIN_PASSWORD=<choose a strong password>
+# Optional — defaults to PIPELINE_API_KEY if unset
+ADMIN_SESSION_SECRET=<openssl rand -hex 32>
+```
+
+---
+
+### Local dev
+
+```bash
+# Terminal 1 — API (must restart after adding ADMIN_PASSWORD)
+cd /mnt/1tb/nctrianglemuslims-ui
+pnpm dev:api:stop && pnpm dev:api
+
+# Terminal 2 — Frontend
+pnpm dev:web:stop && pnpm dev
+```
+
+Open **`http://localhost:5178/admin`** → sign in → edit events.
+
+---
+
+### Phase 3 checklist
+
+- [x] `GET /api/admin/events` (all statuses, search, pagination)
+- [x] `PATCH /api/admin/events/:id` (inline edit)
+- [x] `DELETE /api/admin/events/:id`
+- [x] Hide via PATCH `status: hidden` (replaces separate hide endpoint)
+- [x] Password login + session cookie
+- [x] `/admin` route (outside public Layout)
+- [x] AG Grid spreadsheet table with filter tabs
+- [x] Feature toggle action
+- [x] `.env.example` updated
+- [x] `pnpm run build` passes
+- [x] Set `ADMIN_PASSWORD` on Vercel + redeploy
+- [ ] Verify admin on Vercel preview
+
+---
+
+### Next up (Phase 4)
+
+Operations hardening — see plan:
+
+| Task | Detail |
+|------|--------|
+| pm2 | Add event pipeline + Ollama to `scripts/start-all.sh` |
+| Dedup persistence | SQLite file for pipeline `seen_ids` (survives restarts) |
+| Rate limits | Cap cloud LLM calls (~50/day) |
+| E2E test | Source group message → public calendar within ~30s |
+
+**Phase 5 — Recurring events in admin:** mark weekly series (e.g. “Every Monday”) — pipeline already infers next occurrence as draft placeholder.
 
 See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(plan)Evolution-API-Message-to-Website-Calendar-Database.md).
 

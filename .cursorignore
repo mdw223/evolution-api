@@ -1,0 +1,11 @@
+# Secrets — never index or expose to Agent
+**/.env
+**/.env.*
+!**/.env.example
+
+# Forwarder local config (may reference paths/keys)
+forwarder/config.yaml
+
+node_modules/
+dist/
+.git/
