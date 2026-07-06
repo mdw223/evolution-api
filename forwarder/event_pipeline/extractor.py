@@ -179,3 +179,27 @@ class Tier1Extractor:
             extraction_tier="tier1",
             raw_message_text=text,
         )
+
+    def extract_preview(self, message: IncomingMessage) -> dict[str, str | None]:
+        """Return Tier 1 field guesses even when extraction is incomplete."""
+        text = (message.text or "").strip()
+        if not text:
+            return {"event_name": None, "event_date": None, "event_location": None, "event_start_time": None}
+
+        event_date = None
+        for token in re.split(r"[\n,;|]", text):
+            parsed = _parse_date_token(token)
+            if parsed:
+                event_date = parsed.isoformat()
+                break
+        if not event_date:
+            parsed = _parse_date_token(text)
+            if parsed:
+                event_date = parsed.isoformat()
+
+        return {
+            "event_name": _guess_event_name(text),
+            "event_date": event_date,
+            "event_location": _guess_location(text),
+            "event_start_time": _parse_time(text),
+        }

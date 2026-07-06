@@ -32,7 +32,10 @@ class ExtractionResult:
     is_event: bool
     confidence: float
     event: EventData | None = None
+    classify_raw: str = ""
+    extract_raw: str = ""
     raw_response: str = ""
+    failure_reason: str = ""
 
 
 @dataclass

@@ -9,6 +9,7 @@ from datetime import date
 
 import requests
 
+from .debug_log import log_llm_raw
 from .models import EventData, ExtractionResult, IncomingMessage
 from .prompts import CLASSIFY_PROMPT, EXTRACT_PROMPT
 
@@ -73,26 +74,33 @@ class LocalLlmExtractor:
         resp.raise_for_status()
         return resp.json()["message"]["content"]
 
-    def classify(self, text: str) -> tuple[bool, float]:
+    def classify(self, text: str) -> tuple[bool, float, str]:
         prompt = CLASSIFY_PROMPT.format(text=text[:8000])
         try:
             raw = self._chat(prompt)
+            log_llm_raw(logger, "Tier 2 Ollama", "classify", raw)
             data = _parse_json_block(raw)
-            return bool(data.get("is_event")), float(data.get("confidence", 0.0))
+            return bool(data.get("is_event")), float(data.get("confidence", 0.0)), raw
         except Exception as exc:
             logger.error("Tier 2 classify failed: %s", exc)
-            return False, 0.0
+            return False, 0.0, ""
 
-    def extract(self, text: str, message: IncomingMessage) -> EventData | None:
+    def extract(self, text: str, message: IncomingMessage) -> tuple[EventData | None, str, str]:
         prompt = EXTRACT_PROMPT.format(text=text[:8000], today=date.today().isoformat())
         try:
             raw = self._chat(prompt)
+            log_llm_raw(logger, "Tier 2 Ollama", "extract", raw)
             data = _parse_json_block(raw)
             name = (data.get("eventName") or "").strip()
             event_date = (data.get("eventDate") or "").strip()
             if not name or not event_date:
-                return None
-            return EventData(
+                missing = []
+                if not name:
+                    missing.append("eventName")
+                if not event_date:
+                    missing.append("eventDate")
+                return None, raw, f"missing_fields:{','.join(missing)}"
+            event = EventData(
                 event_name=name[:200],
                 event_date=event_date[:10],
                 event_host_organization=(data.get("eventHostOrganization") or message.group_name) or None,
@@ -106,16 +114,36 @@ class LocalLlmExtractor:
                 raw_message_text=text[:4000],
                 extraction_tier="tier2",
             )
+            return event, raw, ""
         except Exception as exc:
             logger.error("Tier 2 extract failed: %s", exc)
-            return None
+            return None, "", f"parse_error:{exc}"
 
     def classify_and_extract(self, text: str, message: IncomingMessage) -> ExtractionResult:
-        is_event, confidence = self.classify(text)
+        is_event, confidence, classify_raw = self.classify(text)
         if not is_event:
-            return ExtractionResult(is_event=False, confidence=confidence)
+            return ExtractionResult(
+                is_event=False,
+                confidence=confidence,
+                classify_raw=classify_raw,
+                failure_reason="classifier_said_not_event",
+            )
 
-        event = self.extract(text, message)
-        if event:
-            event.confidence_score = confidence
-        return ExtractionResult(is_event=True, confidence=confidence, event=event)
+        event, extract_raw, failure = self.extract(text, message)
+        if not event:
+            return ExtractionResult(
+                is_event=True,
+                confidence=confidence,
+                classify_raw=classify_raw,
+                extract_raw=extract_raw,
+                failure_reason=failure or "extract_incomplete",
+            )
+
+        event.confidence_score = confidence
+        return ExtractionResult(
+            is_event=True,
+            confidence=confidence,
+            event=event,
+            classify_raw=classify_raw,
+            extract_raw=extract_raw,
+        )

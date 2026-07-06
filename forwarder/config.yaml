@@ -62,7 +62,8 @@ event_pipeline:
   ollama_model: llama3.1:8b
   ollama_timeout: 120
   # Tier 3 — Gemini (GEMINI_API_KEY in ../.env)
-  gemini_model: gemini-2.0-flash
+  # gemini-2.0-flash has 0 free-tier quota; gemini-2.5-flash works on free tier (~250 RPD)
+  gemini_model: gemini-2.5-flash
   gemini_timeout: 90
   # OCR
   easyocr_languages:

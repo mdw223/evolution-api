@@ -61,7 +61,7 @@ event_pipeline:
   ollama_url: http://localhost:11434
   ollama_model: llama3.1:8b
   ollama_timeout: 120
-  gemini_model: gemini-2.0-flash
+  gemini_model: gemini-2.5-flash
   gemini_timeout: 90
   easyocr_languages:
     - en

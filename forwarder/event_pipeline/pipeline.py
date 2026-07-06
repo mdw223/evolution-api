@@ -10,6 +10,7 @@ import yaml
 from .classifier import EventClassifier
 from .cloud_llm import CloudLlmExtractor
 from .extractor import Tier1Extractor
+from .debug_log import log_extraction_result, log_tier_outcome
 from .google_drive import GoogleDriveUploader
 from .ingest_client import IngestClient
 from .ingest_resolver import resolve_ingest_url
@@ -70,7 +71,7 @@ class EventPipeline:
         )
         self.tier3 = CloudLlmExtractor(
             api_key=gemini_key,
-            model=pipeline_cfg.get("gemini_model", "gemini-2.0-flash"),
+            model=pipeline_cfg.get("gemini_model", "gemini-2.5-flash"),
             timeout=int(pipeline_cfg.get("gemini_timeout", 90)),
         )
 
@@ -304,8 +305,13 @@ class EventPipeline:
             return self._run_tier3(message, text, classification, image_base64, mimetype, reason="ollama_unavailable")
 
         result = self.tier2.classify_and_extract(text, message)
+        log_extraction_result(logger, "tier2", message.message_id, result)
         if not result.is_event or not result.event:
-            logger.info("Tier 2: not an event or incomplete extraction id=%s", message.message_id)
+            logger.info(
+                "Tier 2: not an event or incomplete extraction id=%s reason=%s",
+                message.message_id,
+                result.failure_reason or "unknown",
+            )
             return self._run_tier3(message, text, classification, image_base64, mimetype, reason="tier2_no_event")
 
         event = result.event
@@ -354,15 +360,25 @@ class EventPipeline:
             image_base64=image_base64,
             ocr_text=classification.ocr_text,
         )
+        log_extraction_result(logger, "tier3", message.message_id, result)
         if not result.is_event or not result.event:
             if partial:
+                logger.info(
+                    "Tier 3 failed id=%s reason=%s — saving Tier 2 partial as draft",
+                    message.message_id,
+                    result.failure_reason or "unknown",
+                )
                 partial.status = "draft"
                 partial.extraction_tier = "tier2"
                 try:
                     return self._ingest_event(partial, classification.score)
                 except Exception as exc:
                     return {"status": "error", "reason": str(exc)}
-            return {"status": "rejected", "reason": "tier3_not_event", "score": classification.score}
+            return {
+                "status": "rejected",
+                "reason": result.failure_reason or "tier3_not_event",
+                "score": classification.score,
+            }
 
         event = result.event
         event.confidence_score = result.confidence
@@ -430,6 +446,14 @@ class EventPipeline:
                 event.status = "published"
             else:
                 event.status = "draft"
+            log_tier_outcome(
+                logger,
+                "tier1",
+                message.message_id,
+                event=event,
+                is_event=True,
+                confidence=classification.score,
+            )
             self._attach_flyer(event, image_base64, mimetype, message.message_id)
             try:
                 return self._ingest_event(event, classification.score)
@@ -437,6 +461,17 @@ class EventPipeline:
                 logger.exception("Tier 1 ingest failed for id=%s", message.message_id)
                 return {"status": "error", "reason": str(exc)}
 
+        preview = self.extractor.extract_preview(extract_message)
+        log_tier_outcome(
+            logger,
+            "tier1",
+            message.message_id,
+            event=None,
+            is_event=True,
+            confidence=classification.score,
+            failure_reason="incomplete_extraction",
+            fields=preview,
+        )
         logger.info(
             "Tier 1 extraction incomplete for id=%s — escalating to Tier 2",
             message.message_id,
