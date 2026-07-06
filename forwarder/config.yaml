@@ -69,6 +69,11 @@ event_pipeline:
   easyocr_languages:
     - en
   easyocr_gpu: false
-  # Flyer upload — share folder with service account email
-  google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
-google_service_account_json: /home/abd/.config/nctrianglemuslims/google-drive-sa.json
+  # Flyer storage — r2 (recommended) | drive | none
+  flyer_storage: r2
+  r2_key_prefix: flyers
+  # R2 credentials from ../.env: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+  # R2_BUCKET_NAME, R2_PUBLIC_URL_BASE
+  # Legacy Google Drive (personal Gmail SA has no quota — use R2 instead):
+  # google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
+  # google_service_account_json: /path/to/google-drive-sa.json

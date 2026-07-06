@@ -431,7 +431,7 @@ Message → OCR (if image) → Tier 1 keywords + regex extract
 
 **Image handling:** easyocr runs in `classifier.py` before scoring when `image_base64` is present. Standalone flyer images always `force_pass` to Tier 2 even if OCR empty.
 
-**Flyer upload:** Google Drive folder `1RRVu2N65MXZXAEbw463L4GNkqCAloWr8` via service account (`GOOGLE_SERVICE_ACCOUNT_JSON`). URL format: `https://drive.google.com/uc?id=FILE_ID` (works with frontend `normalizeFlyerUrl`).
+**Flyer upload:** Cloudflare R2 bucket via S3 API (`R2_*` in `.env`). Public URL: `{R2_PUBLIC_URL_BASE}/flyers/event-{id}.jpg`. Calendar loads images directly from r2.dev (no API read per view). Legacy Google Drive URLs still work via `normalizeFlyerUrl`.
 
 ---
 
@@ -445,7 +445,8 @@ Message → OCR (if image) → Tier 1 keywords + regex extract
 | Tier 2 Ollama | `forwarder/event_pipeline/local_llm.py` |
 | Tier 3 Gemini | `forwarder/event_pipeline/cloud_llm.py` |
 | Flyer OCR | `forwarder/event_pipeline/ocr.py` |
-| Google Drive upload | `forwarder/event_pipeline/google_drive.py` |
+| R2 flyer upload | `forwarder/event_pipeline/r2_storage.py` |
+| Google Drive upload (legacy) | `forwarder/event_pipeline/google_drive.py` |
 | LLM prompts | `forwarder/event_pipeline/prompts.py` |
 | Ingest URL resolver | `forwarder/event_pipeline/ingest_resolver.py` |
 | Keyword dictionary | `forwarder/event_pipeline/event_keywords.yaml` |
@@ -461,8 +462,11 @@ Message → OCR (if image) → Tier 1 keywords + regex extract
 ```bash
 PIPELINE_API_KEY=<same as Vercel>
 GEMINI_API_KEY=<from https://aistudio.google.com/apikey>
-# Path to JSON key file — NOT the JSON contents, NOT in the repo
-GOOGLE_SERVICE_ACCOUNT_JSON=/home/abd/.config/nctrianglemuslims/google-drive-sa.json
+R2_ACCOUNT_ID=<Cloudflare account ID>
+R2_ACCESS_KEY_ID=<R2 API token>
+R2_SECRET_ACCESS_KEY=<R2 API token secret>
+R2_BUCKET_NAME=nctrianglemuslims-flyers
+R2_PUBLIC_URL_BASE=https://pub-xxxxxxxx.r2.dev
 ```
 
 **`forwarder/config.yaml`:** set `event_pipeline.enabled: true`
@@ -505,52 +509,43 @@ First OCR run downloads ~500MB of easyocr models to `~/.EasyOCR/`.
 
 ---
 
-### Google Drive service account (flyer uploads)
+### Cloudflare R2 (flyer uploads)
 
-**Do not** put the JSON key in git. Store the file **outside the repo** and reference its path in `.env`.
+Flyers upload to R2 via S3-compatible API. Postgres stores only the public HTTPS URL; the calendar loads images directly from `pub-xxx.r2.dev` (no API call per page view).
 
-**Folder:** [FlyerUploads](https://drive.google.com/drive/folders/1RRVu2N65MXZXAEbw463L4GNkqCAloWr8?usp=sharing)  
-**Folder ID** (already in `config.yaml`): `1RRVu2N65MXZXAEbw463L4GNkqCAloWr8`
+#### 1. Create bucket (Cloudflare Dashboard)
 
-#### 1. Create credentials (Google Cloud Console)
+1. [Cloudflare Dashboard](https://dash.cloudflare.com/) → **R2** → **Create bucket**  
+   Name: `nctrianglemuslims-flyers`
+2. Bucket → **Settings** → **Public access** → Allow → copy the **r2.dev** URL (e.g. `https://pub-xxxxxxxx.r2.dev`)
 
-1. [Google Cloud Console](https://console.cloud.google.com/) → create/select a project
-2. **APIs & Services → Library** → enable **Google Drive API**
-3. **APIs & Services → Credentials → Create credentials → Service account**
-4. Name e.g. `flyer-uploader` → create
-5. Open the service account → **Keys → Add key → Create new key → JSON**
-6. Save the downloaded file outside the repo, e.g.:
+#### 2. Create API token
 
-```bash
-mkdir -p ~/.config/nctrianglemuslims
-mv ~/Downloads/your-project-*.json ~/.config/nctrianglemuslims/google-drive-sa.json
-chmod 600 ~/.config/nctrianglemuslims/google-drive-sa.json
-```
+R2 → **Manage R2 API tokens** → Create token with **Object Read & Write** on the bucket.
 
-#### 2. Share the Drive folder with the service account
+Save: Account ID, Access Key ID, Secret Access Key.
 
-Open the JSON and copy `"client_email"` (e.g. `flyer-uploader@your-project.iam.gserviceaccount.com`).
-
-In Google Drive, open **FlyerUploads** → **Share** → paste that email → role **Editor** → Send.
-
-Without this step uploads fail with permission errors.
-
-#### 3. Point the pipeline at the key file
-
-In **`evolution-api/.env`**:
+#### 3. Add to `evolution-api/.env`
 
 ```bash
-GOOGLE_SERVICE_ACCOUNT_JSON=/home/abd/.config/nctrianglemuslims/google-drive-sa.json
+R2_ACCOUNT_ID=your_account_id
+R2_ACCESS_KEY_ID=your_access_key
+R2_SECRET_ACCESS_KEY=your_secret_key
+R2_BUCKET_NAME=nctrianglemuslims-flyers
+R2_PUBLIC_URL_BASE=https://pub-xxxxxxxx.r2.dev
 ```
 
-Optional override in `forwarder/config.yaml`:
+In **`forwarder/config.yaml`**:
 
 ```yaml
-google_service_account_json: /home/abd/.config/nctrianglemuslims/google-drive-sa.json
-google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
+event_pipeline:
+  flyer_storage: r2
+  r2_key_prefix: flyers
 ```
 
-Uploaded flyers get URLs like `https://drive.google.com/uc?id=FILE_ID` (compatible with frontend `normalizeFlyerUrl`).
+Uploaded flyers: `https://pub-xxx.r2.dev/flyers/event-{message_id}.jpg`
+
+**Legacy Google Drive:** set `flyer_storage: drive` — note service accounts on personal Gmail have **zero storage quota** and uploads fail with `storageQuotaExceeded`.
 
 ---
 
@@ -674,7 +669,7 @@ python3 scripts/test_classifier_from_sheets.py --limit 10 --ingest --status draf
 - [x] Tier 2 Ollama (`llama3.1:8b`) classify + extract
 - [x] Tier 3 Gemini (`gemini-2.0-flash`) text + vision fallback
 - [x] easyocr flyer OCR
-- [x] Google Drive flyer upload (folder `1RRVu2N65MXZXAEbw463L4GNkqCAloWr8`)
+- [x] Cloudflare R2 flyer upload (`flyer_storage: r2`)
 - [x] Tier cascade in `handle_webhook` (Tier 1 → 2 → 3, not stub return)
 - [x] Ingest client → `POST /api/events/ingest`
 - [x] Ingest URL resolver (local :5177 → Vercel fallback)

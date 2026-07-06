@@ -18,6 +18,7 @@ from .ingest_resolver import resolve_ingest_url
 from .local_llm import LocalLlmExtractor
 from .models import ClassificationResult, EventData, IncomingMessage
 from .ocr import FlyerOcr
+from .r2_storage import FlyerUploader, R2FlyerUploader
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,45 @@ class EventPipeline:
         drive_creds = pipeline_cfg.get("google_service_account_json") or self._load_env_value(
             base.parent / ".env", "GOOGLE_SERVICE_ACCOUNT_JSON"
         )
-        drive_folder = pipeline_cfg.get(
-            "google_drive_folder_id", "1RRVu2N65MXZXAEbw463L4GNkqCAloWr8"
-        )
-        self.drive: GoogleDriveUploader | None = None
-        if drive_creds and drive_folder:
-            self.drive = GoogleDriveUploader(drive_folder, drive_creds)
+        drive_folder = pipeline_cfg.get("google_drive_folder_id", "")
+        flyer_storage = (pipeline_cfg.get("flyer_storage") or "r2").lower()
+        r2_key_prefix = pipeline_cfg.get("r2_key_prefix") or "flyers"
+
+        self.flyer_uploader: FlyerUploader | None = None
+        self.flyer_storage_label = "none"
+
+        if flyer_storage == "r2":
+            r2_account = pipeline_cfg.get("r2_account_id") or self._load_env_value(
+                base.parent / ".env", "R2_ACCOUNT_ID"
+            )
+            r2_access = pipeline_cfg.get("r2_access_key_id") or self._load_env_value(
+                base.parent / ".env", "R2_ACCESS_KEY_ID"
+            )
+            r2_secret = pipeline_cfg.get("r2_secret_access_key") or self._load_env_value(
+                base.parent / ".env", "R2_SECRET_ACCESS_KEY"
+            )
+            r2_bucket = pipeline_cfg.get("r2_bucket_name") or self._load_env_value(
+                base.parent / ".env", "R2_BUCKET_NAME"
+            )
+            r2_public = pipeline_cfg.get("r2_public_url_base") or self._load_env_value(
+                base.parent / ".env", "R2_PUBLIC_URL_BASE"
+            )
+            r2 = R2FlyerUploader(
+                account_id=r2_account,
+                access_key_id=r2_access,
+                secret_access_key=r2_secret,
+                bucket_name=r2_bucket,
+                public_url_base=r2_public,
+                key_prefix=r2_key_prefix,
+            )
+            if r2.available():
+                self.flyer_uploader = r2
+                self.flyer_storage_label = "r2"
+        elif flyer_storage == "drive" and drive_creds and drive_folder:
+            drive = GoogleDriveUploader(drive_folder, drive_creds)
+            if drive.available():
+                self.flyer_uploader = drive
+                self.flyer_storage_label = "drive"
 
         self.session = requests.Session()
         self.session.headers.update({"apikey": self.api_key, "Content-Type": "application/json"})
@@ -108,13 +142,13 @@ class EventPipeline:
             ingest_url = self.ingest.ingest_url if self.ingest else "none"
             logger.info(
                 "Event pipeline ready: ingest_backend=%s url=%s source_groups=%d "
-                "tier2=%s tier3=%s drive=%s",
+                "tier2=%s tier3=%s flyer_storage=%s",
                 self.ingest_backend,
                 ingest_url,
                 len(self.source_jids),
                 self.tier2.available(),
                 self.tier3.available(),
-                bool(self.drive),
+                self.flyer_storage_label,
             )
         else:
             logger.info("Event pipeline disabled in config")
@@ -267,12 +301,14 @@ class EventPipeline:
         mimetype: str | None,
         message_id: str,
     ) -> None:
-        if not image_base64 or not self.drive:
+        if not image_base64 or not self.flyer_uploader:
             return
         ext = "jpg"
         if mimetype and "png" in mimetype:
             ext = "png"
-        url = self.drive.upload_image(image_base64, f"event-{message_id[:16]}.{ext}", mimetype or "image/jpeg")
+        url = self.flyer_uploader.upload_image(
+            image_base64, f"event-{message_id[:16]}.{ext}", mimetype or "image/jpeg"
+        )
         if url:
             event.flyer_url = url
 

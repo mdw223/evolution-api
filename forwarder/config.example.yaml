@@ -66,5 +66,7 @@ event_pipeline:
   easyocr_languages:
     - en
   easyocr_gpu: false
-  google_drive_folder_id: 1RRVu2N65MXZXAEbw463L4GNkqCAloWr8
-  google_service_account_json:
+  flyer_storage: r2
+  r2_key_prefix: flyers
+  # google_drive_folder_id:
+  # google_service_account_json:
