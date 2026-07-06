@@ -36,6 +36,7 @@ class ExtractionResult:
     extract_raw: str = ""
     raw_response: str = ""
     failure_reason: str = ""
+    llm_fields: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

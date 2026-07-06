@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -162,6 +163,7 @@ class CloudLlmExtractor:
                         confidence=float(data.get("confidence", 0.0)),
                         extract_raw=extract_raw,
                         raw_response=extract_raw,
+                        llm_fields=data,
                         failure_reason="classifier_said_not_event",
                     )
             else:
@@ -197,6 +199,7 @@ class CloudLlmExtractor:
                     classify_raw=classify_raw,
                     extract_raw=extract_raw,
                     raw_response=extract_raw or classify_raw,
+                    llm_fields=data,
                     failure_reason=f"missing_fields:{','.join(missing)}",
                 )
 
@@ -222,6 +225,7 @@ class CloudLlmExtractor:
                 classify_raw=classify_raw,
                 extract_raw=extract_raw,
                 raw_response=extract_raw or classify_raw,
+                llm_fields=data,
             )
         except requests.HTTPError as exc:
             details = parse_gemini_error(exc.response.text if exc.response else "")

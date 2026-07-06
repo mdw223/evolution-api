@@ -85,7 +85,7 @@ class LocalLlmExtractor:
             logger.error("Tier 2 classify failed: %s", exc)
             return False, 0.0, ""
 
-    def extract(self, text: str, message: IncomingMessage) -> tuple[EventData | None, str, str]:
+    def extract(self, text: str, message: IncomingMessage) -> tuple[EventData | None, str, str, dict]:
         prompt = EXTRACT_PROMPT.format(text=text[:8000], today=date.today().isoformat())
         try:
             raw = self._chat(prompt)
@@ -99,7 +99,7 @@ class LocalLlmExtractor:
                     missing.append("eventName")
                 if not event_date:
                     missing.append("eventDate")
-                return None, raw, f"missing_fields:{','.join(missing)}"
+                return None, raw, f"missing_fields:{','.join(missing)}", data
             event = EventData(
                 event_name=name[:200],
                 event_date=event_date[:10],
@@ -114,10 +114,10 @@ class LocalLlmExtractor:
                 raw_message_text=text[:4000],
                 extraction_tier="tier2",
             )
-            return event, raw, ""
+            return event, raw, "", data
         except Exception as exc:
             logger.error("Tier 2 extract failed: %s", exc)
-            return None, "", f"parse_error:{exc}"
+            return None, "", f"parse_error:{exc}", {}
 
     def classify_and_extract(self, text: str, message: IncomingMessage) -> ExtractionResult:
         is_event, confidence, classify_raw = self.classify(text)
@@ -129,13 +129,14 @@ class LocalLlmExtractor:
                 failure_reason="classifier_said_not_event",
             )
 
-        event, extract_raw, failure = self.extract(text, message)
+        event, extract_raw, failure, llm_fields = self.extract(text, message)
         if not event:
             return ExtractionResult(
                 is_event=True,
                 confidence=confidence,
                 classify_raw=classify_raw,
                 extract_raw=extract_raw,
+                llm_fields=llm_fields,
                 failure_reason=failure or "extract_incomplete",
             )
 
@@ -146,4 +147,5 @@ class LocalLlmExtractor:
             event=event,
             classify_raw=classify_raw,
             extract_raw=extract_raw,
+            llm_fields=llm_fields,
         )

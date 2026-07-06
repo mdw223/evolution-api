@@ -696,5 +696,9 @@ python3 scripts/test_classifier_from_sheets.py --limit 10 --ingest --status draf
 
 Phase 4: SQLite dedup persistence, pm2, rate limits — see plan.
 
+**Phase 5 — Admin dashboard: recurring events**
+
+Pipeline may extract events like “Every Monday” without a single `eventDate`. Tier cascade now infers the **next occurrence** as a draft placeholder (`event_merge.infer_recurring_date`). Admin UI should let editors mark events as **recurring** (e.g. weekly on Monday) and manage series separately from one-off dates — `nctrianglemuslims-ui` dashboard work, not forwarder.
+
 See plan: [`(plan)Evolution-API-Message-to-Website-Calendar-Database.md`](./(plan)Evolution-API-Message-to-Website-Calendar-Database.md).
 

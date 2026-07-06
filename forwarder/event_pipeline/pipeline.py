@@ -11,6 +11,7 @@ from .classifier import EventClassifier
 from .cloud_llm import CloudLlmExtractor
 from .extractor import Tier1Extractor
 from .debug_log import log_extraction_result, log_tier_outcome
+from .event_merge import PartialEvent
 from .google_drive import GoogleDriveUploader
 from .ingest_client import IngestClient
 from .ingest_resolver import resolve_ingest_url
@@ -291,6 +292,39 @@ class EventPipeline:
             "group": event.source_group_name,
         }
 
+    def _finalize_and_ingest(
+        self,
+        accumulated: PartialEvent,
+        classification_score: float,
+        *,
+        publish_min_confidence: float | None,
+        image_base64: str | None,
+        mimetype: str | None,
+        message_id: str,
+    ) -> dict:
+        if not accumulated.can_ingest():
+            return {
+                "status": "rejected",
+                "reason": "missing_required_fields",
+                "accumulated": accumulated.snapshot(),
+                "score": classification_score,
+            }
+
+        event = accumulated.to_event_data(infer_date=True)
+        assert event is not None
+
+        if publish_min_confidence is not None and accumulated.can_publish(publish_min_confidence):
+            event.status = "published"
+        else:
+            event.status = "draft"
+
+        self._attach_flyer(event, image_base64, mimetype, message_id)
+        try:
+            return self._ingest_event(event, classification_score)
+        except Exception as exc:
+            logger.exception("Ingest failed for id=%s", message_id)
+            return {"status": "error", "reason": str(exc), "extraction_tier": accumulated.extraction_tier}
+
     def _run_tier2(
         self,
         message: IncomingMessage,
@@ -298,39 +332,46 @@ class EventPipeline:
         classification: ClassificationResult,
         image_base64: str | None,
         mimetype: str | None,
+        accumulated: PartialEvent,
     ) -> dict:
         logger.info("Tier 2 Ollama for message id=%s", message.message_id)
         if not self.tier2.available():
             logger.warning("Ollama unavailable — skipping Tier 2")
-            return self._run_tier3(message, text, classification, image_base64, mimetype, reason="ollama_unavailable")
+            return self._run_tier3(
+                message, text, classification, image_base64, mimetype,
+                accumulated=accumulated, reason="ollama_unavailable",
+            )
 
         result = self.tier2.classify_and_extract(text, message)
+        if result.llm_fields:
+            accumulated.merge_llm_data(result.llm_fields, tier="tier2", confidence=result.confidence)
+        accumulated.log_snapshot("tier2", message.message_id)
         log_extraction_result(logger, "tier2", message.message_id, result)
-        if not result.is_event or not result.event:
-            logger.info(
-                "Tier 2: not an event or incomplete extraction id=%s reason=%s",
-                message.message_id,
-                result.failure_reason or "unknown",
+
+        if not result.is_event:
+            return self._run_tier3(
+                message, text, classification, image_base64, mimetype,
+                accumulated=accumulated, reason="tier2_not_event",
             )
-            return self._run_tier3(message, text, classification, image_base64, mimetype, reason="tier2_no_event")
 
-        event = result.event
-        event.confidence_score = result.confidence
-        if result.confidence >= self.tier2_publish_min:
-            event.status = "published"
-        else:
-            event.status = "draft"
-            if result.confidence < self.tier2_publish_min:
-                return self._run_tier3(
-                    message, text, classification, image_base64, mimetype, reason="tier2_low_confidence", partial=event
-                )
+        if accumulated.can_publish(self.tier2_publish_min):
+            return self._finalize_and_ingest(
+                accumulated,
+                classification.score,
+                publish_min_confidence=self.tier2_publish_min,
+                image_base64=image_base64,
+                mimetype=mimetype,
+                message_id=message.message_id,
+            )
 
-        self._attach_flyer(event, image_base64, mimetype, message.message_id)
-        try:
-            return self._ingest_event(event, classification.score)
-        except Exception as exc:
-            logger.exception("Tier 2 ingest failed id=%s", message.message_id)
-            return {"status": "error", "reason": str(exc), "extraction_tier": "tier2"}
+        logger.info(
+            "Tier 2 incomplete or low confidence id=%s — escalating to Tier 3",
+            message.message_id,
+        )
+        return self._run_tier3(
+            message, text, classification, image_base64, mimetype,
+            accumulated=accumulated, reason="tier2_incomplete_or_low_confidence",
+        )
 
     def _run_tier3(
         self,
@@ -340,19 +381,21 @@ class EventPipeline:
         image_base64: str | None,
         mimetype: str | None,
         *,
+        accumulated: PartialEvent,
         reason: str = "tier2_escalation",
-        partial: EventData | None = None,
     ) -> dict:
         logger.info("Tier 3 Gemini for message id=%s (reason=%s)", message.message_id, reason)
         if not self.tier3.available():
-            logger.warning("Gemini unavailable — saving draft if partial event exists")
-            if partial:
-                partial.status = "draft"
-                try:
-                    return self._ingest_event(partial, classification.score)
-                except Exception as exc:
-                    return {"status": "error", "reason": str(exc)}
-            return {"status": "needs_tier3", "reason": "gemini_api_key_missing"}
+            logger.warning("Gemini unavailable — saving accumulated draft if possible")
+            accumulated.status = "draft"
+            return self._finalize_and_ingest(
+                accumulated,
+                classification.score,
+                publish_min_confidence=None,
+                image_base64=image_base64,
+                mimetype=mimetype,
+                message_id=message.message_id,
+            )
 
         result = self.tier3.classify_and_extract(
             text,
@@ -360,35 +403,38 @@ class EventPipeline:
             image_base64=image_base64,
             ocr_text=classification.ocr_text,
         )
+        if result.llm_fields:
+            accumulated.merge_llm_data(
+                result.llm_fields,
+                tier="tier3",
+                confidence=result.confidence if result.confidence > 0 else accumulated.confidence_score,
+            )
+        accumulated.log_snapshot("tier3", message.message_id)
         log_extraction_result(logger, "tier3", message.message_id, result)
-        if not result.is_event or not result.event:
-            if partial:
-                logger.info(
-                    "Tier 3 failed id=%s reason=%s — saving Tier 2 partial as draft",
-                    message.message_id,
-                    result.failure_reason or "unknown",
-                )
-                partial.status = "draft"
-                partial.extraction_tier = "tier2"
-                try:
-                    return self._ingest_event(partial, classification.score)
-                except Exception as exc:
-                    return {"status": "error", "reason": str(exc)}
+
+        if result.failure_reason and not result.llm_fields:
+            logger.warning(
+                "Tier 3 failed id=%s reason=%s — using accumulated fields from prior tiers",
+                message.message_id,
+                result.failure_reason,
+            )
+
+        if not result.is_event and not accumulated.can_ingest():
             return {
                 "status": "rejected",
                 "reason": result.failure_reason or "tier3_not_event",
+                "accumulated": accumulated.snapshot(),
                 "score": classification.score,
             }
 
-        event = result.event
-        event.confidence_score = result.confidence
-        event.status = "published" if result.confidence >= self.tier3_publish_min else "draft"
-        self._attach_flyer(event, image_base64, mimetype, message.message_id)
-        try:
-            return self._ingest_event(event, classification.score)
-        except Exception as exc:
-            logger.exception("Tier 3 ingest failed id=%s", message.message_id)
-            return {"status": "error", "reason": str(exc), "extraction_tier": "tier3"}
+        return self._finalize_and_ingest(
+            accumulated,
+            classification.score,
+            publish_min_confidence=self.tier3_publish_min,
+            image_base64=image_base64,
+            mimetype=mimetype,
+            message_id=message.message_id,
+        )
 
     def handle_webhook(self, payload: dict) -> dict:
         if not self.enabled:
@@ -462,6 +508,15 @@ class EventPipeline:
                 return {"status": "error", "reason": str(exc)}
 
         preview = self.extractor.extract_preview(extract_message)
+        text = classification.combined_text or message.text
+        accumulated = PartialEvent.from_preview(
+            preview,
+            extract_message,
+            text,
+            confidence=classification.score,
+            tier="tier1",
+        )
+        accumulated.log_snapshot("tier1", message.message_id)
         log_tier_outcome(
             logger,
             "tier1",
@@ -470,11 +525,12 @@ class EventPipeline:
             is_event=True,
             confidence=classification.score,
             failure_reason="incomplete_extraction",
-            fields=preview,
+            fields=accumulated.snapshot(),
         )
         logger.info(
             "Tier 1 extraction incomplete for id=%s — escalating to Tier 2",
             message.message_id,
         )
-        text = classification.combined_text or message.text
-        return self._run_tier2(message, text, classification, image_base64, mimetype)
+        return self._run_tier2(
+            message, text, classification, image_base64, mimetype, accumulated
+        )
