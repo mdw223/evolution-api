@@ -390,7 +390,21 @@ class EventPipeline:
                 accumulated=accumulated, reason="tier2_not_event",
             )
 
-        if accumulated.can_publish(self.tier2_publish_min):
+        # Materialize inferred recurring date so tier 2 can finish without Tier 3
+        if not accumulated.event_date:
+            inferred = accumulated.resolve_date()
+            if inferred:
+                accumulated.event_date = inferred
+
+        event = accumulated.to_event_data(infer_date=True)
+        if event:
+            logger.info(
+                "Tier 2 sufficient id=%s name=%r date=%s confidence=%s — skipping Tier 3",
+                message.message_id,
+                event.event_name,
+                event.event_date,
+                accumulated.confidence_score,
+            )
             return self._finalize_and_ingest(
                 accumulated,
                 classification.score,
@@ -401,12 +415,12 @@ class EventPipeline:
             )
 
         logger.info(
-            "Tier 2 incomplete or low confidence id=%s — escalating to Tier 3",
+            "Tier 2 incomplete (missing name or date) id=%s — escalating to Tier 3",
             message.message_id,
         )
         return self._run_tier3(
             message, text, classification, image_base64, mimetype,
-            accumulated=accumulated, reason="tier2_incomplete_or_low_confidence",
+            accumulated=accumulated, reason="tier2_incomplete",
         )
 
     def _run_tier3(

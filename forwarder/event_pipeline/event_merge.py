@@ -64,8 +64,6 @@ def infer_recurring_date(text: str, today: date | None = None) -> str | None:
             rf"\bweekly\s+on\s+{day_name}\b", lowered
         ):
             days_ahead = (weekday - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
             return (today + timedelta(days=days_ahead)).isoformat()
     return None
 
@@ -173,7 +171,13 @@ class PartialEvent:
     def resolve_date(self) -> str | None:
         if self.event_date:
             return self.event_date[:10]
-        return infer_recurring_date(self.raw_message_text or "")
+        inferred = infer_recurring_date(self.raw_message_text or "")
+        if inferred:
+            logger.info(
+                "Inferred recurring event date=%s from message text (no explicit eventDate)",
+                inferred,
+            )
+        return inferred
 
     def snapshot(self) -> dict[str, Any]:
         return {
