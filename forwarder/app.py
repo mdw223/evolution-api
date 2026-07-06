@@ -16,6 +16,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+config_path = Path(__file__).parent / "config.yaml"
+with open(config_path) as f:
+    _cfg = yaml.safe_load(f)
+_pipeline_cfg = _cfg.get("event_pipeline") or {}
+if _pipeline_cfg.get("verbose_logging"):
+    logging.getLogger("event_pipeline").setLevel(logging.DEBUG)
+
 forwarder = Forwarder()
 
 try:
@@ -23,6 +30,16 @@ try:
 except Exception as exc:
     logger.error("Event pipeline failed to initialize: %s", exc)
     event_pipeline = None
+
+
+def _run_pipeline(payload: dict) -> None:
+    if not event_pipeline:
+        return
+    try:
+        result = event_pipeline.handle_webhook(payload)
+        logger.info("Pipeline result: %s", result)
+    except Exception:
+        logger.exception("Pipeline thread failed")
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
@@ -67,7 +84,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         if event_pipeline and event_pipeline.enabled:
             threading.Thread(
-                target=event_pipeline.handle_webhook,
+                target=_run_pipeline,
                 args=(payload,),
                 daemon=True,
                 name="event-pipeline",
@@ -77,11 +94,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    config_path = Path(__file__).parent / "config.yaml"
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    host = cfg.get("host", "0.0.0.0")
-    port = cfg.get("port", 5000)
+    host = _cfg.get("host", "0.0.0.0")
+    port = _cfg.get("port", 5000)
     server = HTTPServer((host, port), WebhookHandler)
     logger.info("Starting forwarder on %s:%s", host, port)
     server.serve_forever()

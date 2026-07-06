@@ -29,6 +29,8 @@ class EventPipeline:
 
         pipeline_cfg = self.config.get("event_pipeline") or {}
         self.enabled = bool(pipeline_cfg.get("enabled", False))
+        if pipeline_cfg.get("verbose_logging"):
+            logging.getLogger("event_pipeline").setLevel(logging.DEBUG)
         self.auto_publish_min_score = float(pipeline_cfg.get("auto_publish_min_score", 0.5))
         self.tier2_publish_min = float(pipeline_cfg.get("tier2_publish_min_confidence", 0.75))
         self.tier3_publish_min = float(pipeline_cfg.get("tier3_publish_min_confidence", 0.65))
@@ -100,6 +102,21 @@ class EventPipeline:
         self.seen_ids: set[str] = set()
         self.max_seen = 5000
 
+        if self.enabled:
+            ingest_url = self.ingest.ingest_url if self.ingest else "none"
+            logger.info(
+                "Event pipeline ready: ingest_backend=%s url=%s source_groups=%d "
+                "tier2=%s tier3=%s drive=%s",
+                self.ingest_backend,
+                ingest_url,
+                len(self.source_jids),
+                self.tier2.available(),
+                self.tier3.available(),
+                bool(self.drive),
+            )
+        else:
+            logger.info("Event pipeline disabled in config")
+
     @staticmethod
     def _load_env_value(env_path: Path, key: str) -> str:
         if not env_path.exists():
@@ -157,38 +174,73 @@ class EventPipeline:
             return mimetype.startswith("image/")
         return False
 
-    def _parse_message(self, payload: dict) -> IncomingMessage | None:
+    def _parse_message(self, payload: dict) -> tuple[IncomingMessage | None, str | None]:
         if payload.get("event") != "messages.upsert":
-            return None
+            return None, f"wrong_event_type:{payload.get('event', 'unknown')}"
 
         data = payload.get("data")
         if not data or not isinstance(data, dict):
-            return None
+            return None, "no_message_data"
 
         key = data.get("key") or {}
         remote_jid = key.get("remoteJid")
         if not remote_jid or remote_jid not in self.source_jids:
-            return None
+            return None, f"unknown_group:{remote_jid or 'missing'}"
         if key.get("fromMe") and not self.forward_own_messages:
-            return None
+            return None, "own_message_skipped"
 
         msg_id = key.get("id")
         if msg_id and not self._remember_id(msg_id):
-            logger.debug("Pipeline skipping duplicate message id=%s", msg_id)
-            return None
+            return None, f"duplicate_message:{msg_id}"
 
         text = self._extract_text(data) or ""
         if re.match(r"^\[.+\] .+", text):
-            return None
+            return None, "relay_prefixed_text"
 
-        return IncomingMessage(
-            message_id=msg_id or "",
-            remote_jid=remote_jid,
-            group_name=self._group_label(remote_jid),
-            sender_name=data.get("pushName") or "Unknown",
-            text=text,
-            has_image=self._is_image_message(data),
-            raw_data=data,
+        return (
+            IncomingMessage(
+                message_id=msg_id or "",
+                remote_jid=remote_jid,
+                group_name=self._group_label(remote_jid),
+                sender_name=data.get("pushName") or "Unknown",
+                text=text,
+                has_image=self._is_image_message(data),
+                raw_data=data,
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _text_preview(text: str, max_len: int = 80) -> str:
+        preview = text.replace("\n", " ").strip()
+        if len(preview) <= max_len:
+            return preview
+        return preview[: max_len - 1] + "…"
+
+    def _log_message_received(self, message: IncomingMessage) -> None:
+        logger.info(
+            "Pipeline message id=%s group=%s sender=%s has_image=%s text=%r",
+            message.message_id,
+            message.group_name,
+            message.sender_name,
+            message.has_image,
+            self._text_preview(message.text),
+        )
+
+    def _log_extracted_event(self, event: EventData) -> None:
+        logger.info(
+            "Pipeline extracted id=%s name=%r date=%s host=%s location=%s "
+            "start=%s end=%s status=%s tier=%s confidence=%s",
+            event.whatsapp_message_id,
+            event.event_name,
+            event.event_date,
+            event.event_host_organization or "—",
+            event.event_location or "—",
+            event.event_start_time or "—",
+            event.event_end_time or "—",
+            event.status,
+            event.extraction_tier,
+            event.confidence_score,
         )
 
     def _message_for_extraction(
@@ -224,6 +276,7 @@ class EventPipeline:
 
     def _ingest_event(self, event: EventData, classification_score: float) -> dict:
         assert self.ingest is not None
+        self._log_extracted_event(event)
         result = self.ingest.create_event(event)
         return {
             "status": result.get("status", "created"),
@@ -231,6 +284,10 @@ class EventPipeline:
             "event_status": event.status,
             "extraction_tier": event.extraction_tier,
             "confidence": event.confidence_score,
+            "event_name": event.event_name,
+            "event_date": event.event_date,
+            "event_location": event.event_location,
+            "group": event.source_group_name,
         }
 
     def _run_tier2(
@@ -321,9 +378,12 @@ class EventPipeline:
         if not self.enabled:
             return {"status": "disabled"}
 
-        message = self._parse_message(payload)
+        message, ignore_reason = self._parse_message(payload)
         if not message:
-            return {"status": "ignored"}
+            logger.info("Pipeline ignored: %s", ignore_reason)
+            return {"status": "ignored", "reason": ignore_reason}
+
+        self._log_message_received(message)
 
         image_base64: str | None = None
         mimetype: str | None = None
@@ -348,10 +408,16 @@ class EventPipeline:
         )
 
         if classification.action == "reject":
+            logger.info(
+                "Pipeline rejected id=%s score=%.2f reason=below_keyword_threshold",
+                message.message_id,
+                classification.score,
+            )
             return {
                 "status": "rejected",
                 "score": classification.score,
                 "reason": "below_keyword_threshold",
+                "group": message.group_name,
             }
 
         extract_message = self._message_for_extraction(message, classification)
